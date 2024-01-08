@@ -1,5 +1,3 @@
-%![logo](logo.png)
-
 # PolyBin3D
 PolyBin3D is a Python code that estimates the binned power spectrum, bispectrum, and trispectrum for 3D fields such as the distributions of matter and galaxies, using the algorithms of [Philcox 2020](https://arxiv.org/abs/2012.09389), [Philcox 2021](https://arxiv.org/abs/2107.06287) and [Ivanov et al. 2023](https://arxiv.org/abs/2302.04414). It is a sister code to [PolyBin](https://github.com/oliverphilcox/PolyBin), which computes the polyspectra of data on the two-sphere and is a modern reimplementation of the former [Spectra-Without-Windows](https://github.com/oliverphilcox/Spectra-Without-Windows) code. 
 
@@ -45,15 +43,18 @@ Further details are described in the tutorials, which descibe
 2. [Validation](Tutorial%202%20-%20Validating%20the%20Unwindowed%20Estimators.ipynb) of the window-deconvolved power spectrum estimators on simulations
 3. [Application](Tutorial%203%20-%20BOSS%20Pk%20Multipoles.ipynb) of the power spectrum esitmators to the BOSS DR12 dataset.
 
-### Authors
+
+## Authors
 - [Oliver Philcox](mailto:ohep2@cantab.ac.uk) (Columbia / Simons Foundation)
 
-### Dependencies
+
+## Dependencies
 - Python 2/3
 - fftw [for FFTs]
 - Nbodykit [not required, but useful for testing]
 
-### References
+
+## References
 **Code references:**
 1. Philcox, O. H. E., "Cosmology Without Windows: Quadratic Estimators for the Galaxy Power Spectrum", (2020) ([arXiv](https://arxiv.org/abs/2012.09389))
 2. Philcox, O. H. E., "Cosmology Without Window Functions: Cubic Estimators for the Galaxy Bispectrum", (2021) ([arXiv](https://arxiv.org/abs/2107.06287))
