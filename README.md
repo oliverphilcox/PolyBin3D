@@ -11,7 +11,7 @@ PolyBin contains the following modules:
 
 The basic usage is the following:
 ```
-  # Import code
+# Import code
 import PolyBin3D as pb
 import numpy as np
 
