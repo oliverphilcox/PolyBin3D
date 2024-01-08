@@ -50,6 +50,7 @@ Further details are described in the tutorials, which descibe
 
 ## Dependencies
 - Python 2/3
+- numpy, scipy
 - fftw [for FFTs]
 - Nbodykit [not required, but useful for testing]
 
