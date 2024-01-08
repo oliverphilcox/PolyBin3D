@@ -9,14 +9,31 @@ PolyBin contains the following modules:
 - `pspec`: Binned power spectra
 - `bspec`: Binned bispectra
 
-The basic usage is
+The basic usage is the following:
+```
+  # Import code
+  import PolyBin3D as pb
 
-# TODO!
+  # Load base class
+  base = pb.PolyBin3D()
+
+  # Load power spectrum class
+  pspec = pb.PSpec()
+
+  # Compute Fisher matrix and shot-noise using Monte Carlo simulations (should usually be parallelized)
+  fish, shot_num = pspec.compute_fisher(10, N_cpus=1, verb=True)
+
+  # Compute windowed power spectra
+  Pk_ideal = pspec.Pk_ideal(data) 
+
+  # Compute power spectrum of the data
+  Pk_unwindowed = pspec.Pk_unwindowed(data, fish=fish, shot_num=shot_num)
+```
 
 Further details are described in the tutorials, which descibe
-[1](Tutorial%201%20-%20Pk%20from%20Simulations%20.ipynb). Introduction to PolyBin3D, and computing the power spectrum from simulations
-2. Validation of the window-deconvolved power spectrum estimators on simulations
-3. Application of the power spectrum esitmators to the BOSS DR12 dataset.
+1. [Introduction](Tutorial%201%20-%20Pk%20from%20Simulations%20.ipynb) to PolyBin3D, and computing the power spectrum from simulations
+2. [Validation](Tutorial%202%20-%20Validating%20the%20Unwindowed%20Estimators.ipynb) of the window-deconvolved power spectrum estimators on simulations
+3. [Application](Tutorial%203%20-%20BOSS%20Pk%20Multipoles.ipynb) of the power spectrum esitmators to the BOSS DR12 dataset.
 
 ### Authors
 - [Oliver Philcox](mailto:ohep2@cantab.ac.uk) (Columbia / Simons Foundation)
