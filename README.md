@@ -14,7 +14,7 @@ The basic usage is
 # TODO!
 
 Further details are described in the tutorials, which descibe
-1. Introduction to PolyBin3D, and computing the power spectrum from simulations
+[1](Tutorial%201%20-%20Pk%20from%20Simulations%20.ipynb). Introduction to PolyBin3D, and computing the power spectrum from simulations
 2. Validation of the window-deconvolved power spectrum estimators on simulations
 3. Application of the power spectrum esitmators to the BOSS DR12 dataset.
 
