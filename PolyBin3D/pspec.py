@@ -511,3 +511,187 @@ class PSpec():
             index += self.Nk
 
         return Pk_dict
+
+    def compute_theory_matrix(self, seed, k_bins_theory, applySinv_transpose=None, verb=False):
+        """This computes the a rectangular matrix used to window-convolve the theory, using a single GRF simulation, created internally.
+        
+        We must specify the desired theory binning. An optional input is a function that applies S^-T to a map. The code will assume S^-T = S^-1 if this is not supplied."""
+
+        if self.applySinv==None:
+            raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
+
+        if type(applySinv_transpose)!=type(lambda x: x):
+            print(type(applySinv_transpose))
+            applySinv_transpose = self.applySinv
+            print("## Caution: assuming S^-1 is symmetric!")
+
+        assert np.max(k_bins_theory)<np.min(self.base.kNy), "k_max must be less than k_Nyquist!"
+        assert np.min(k_bins_theory)>=np.max(self.base.kF), "k_min must be at least the k_fundamental!"
+        assert np.max(k_bins_theory)<=self.base.Pfid[0][-1], "Fiducial power spectrum should extend up to k_max!"
+        assert np.min(k_bins_theory)>=self.base.Pfid[0][0], "Fiducial power spectrum should extend down to k_min!"
+        
+        # Initialize output
+        Nk_th = len(k_bins_theory)-1
+        N_bins_th = self.Nl*Nk_th
+        fish = np.zeros((self.N_bins,N_bins_th))
+
+        # Compute a random realization with known power spectrum
+        if verb: print("Generating GRF")
+        a_map_fourier = self.base.generate_data(seed=seed+int(1e7), output_type='fourier')
+        if not self.const_mask:
+            a_map_real = self.base.to_real(a_map_fourier)
+            
+        # Define spherical harmonics
+        Ylm_fourier = self.base._compute_real_harmonics(self.base.k_grids, self.lmax, self.odd_l)
+        
+        # Define Q map code
+        def compute_Q_Sinv():
+            """
+            Assemble and return the Q [ = partial_l,b . xi . S^-1 W . a] maps in Fourier-space.
+
+            The outputs is W^TS^-T Q(l,b).
+            """
+            
+            # Define k filter
+            filt = lambda ki: (self.base.modk_grid>=self.k_bins[ki])*(self.base.modk_grid<self.k_bins[ki+1])
+            
+            # Compute S^-1 W a
+            if self.const_mask:
+                weighted_map_fourier = self.applySinv(a_map_fourier, input_type='fourier', output_type='fourier')*self.mask_mean
+            else:
+                weighted_map_fourier = self.applySinv(self.mask*a_map_real, input_type='real', output_type='fourier')
+        
+            # Define real-space map (where necessary)
+            if self.base.sightline=='local' and self.lmax>0:
+                weighted_map_real = self.base.to_real(weighted_map_fourier)
+            
+            # Define arrays
+            Q_maps = np.zeros((self.N_bins,self.base.gridsize.prod()),dtype='complex')
+            
+            def _apply_weighting(input_map, real=False):
+                """Apply W^T S^-T weighting to maps. Input is either a Fourier-space map or a real-space map."""
+                if self.const_mask:
+                    if real:
+                        return self.mask_mean*applySinv_transpose(input_map,input_type='real',output_type='fourier')
+                    else:
+                        return self.mask_mean*applySinv_transpose(input_map,input_type='fourier',output_type='fourier')         
+                else:
+                    if real:
+                        # Use real-space map directly
+                        return self.base.to_fourier(self.mask*applySinv_transpose(input_map,input_type='real',output_type='real'))
+                    else:
+                        return self.base.to_fourier(self.mask*applySinv_transpose(input_map,input_type='fourier',output_type='real'))
+            
+            # Compute Q derivative for the monopole
+            for ki in range(self.Nk):
+                Q_maps[ki,:] = _apply_weighting(weighted_map_fourier*filt(ki), real=False).ravel()
+
+            # Repeat for higher-order multipoles
+            for li in range(1,self.Nl):
+
+                if self.base.sightline=='global':
+                    # Compute L_ell(mu)* S^-1 W a
+                    leg_map = weighted_map_fourier*legendre(li*2)(self.muk_grid)
+
+                    # Add to bins
+                    for ki in range(self.Nk):
+                        Q_maps[li*self.Nk+ki,:] = _apply_weighting(leg_map*filt(ki), real=False).ravel()                           
+
+                else:
+                    # First part: (-1)^l Theta_b(k) Sum_m Y_lm(k)* [U^-1 a]_lm(k)
+                    leg_map = np.sum([Ylm_fourier[(2-self.odd_l)*li][lm_ind]*self.base.to_fourier(weighted_map_real*self.Ylm_real[(2-self.odd_l)*li][lm_ind]) for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li]))],axis=0)
+
+                    # Add phase for odd ell
+                    if (self.odd_l and li%2==1):
+                        leg_map *= -1
+
+                    # Add to bins
+                    for ki in range(self.Nk):
+                        
+                        # Add first part
+                        Q_maps[li*self.Nk+ki,:] += 0.5*_apply_weighting(leg_map*filt(ki), real=False).ravel()
+
+                        # Second part: Sum_m Y_lm (x) Int_k e^ik.x Theta_b(k) Y_lm(k)*[S^-1 W a](k)                        
+                        real_map = np.zeros(self.base.gridsize,dtype='complex')
+                        for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li])):
+                            # Cast to full Fourier-space map
+                            k_map = weighted_map_fourier*Ylm_fourier[(2-self.odd_l)*li][lm_ind]*filt(ki)
+                            real_map += self.base.to_real(k_map)*self.Ylm_real[(2-self.odd_l)*li][lm_ind]
+
+                        # Add second part, using the real-space map [which fills all Fourier modes, not just those in [k_min, k_max]]
+                        Q_maps[li*self.Nk+ki,:] += 0.5*_apply_weighting(real_map, real=True).ravel()
+
+                        # Add 1.0j to imaginary parts to keep maps real
+                        if (self.odd_l and li%2==1):
+                            Q_maps[li*self.Nk+ki] *= 1.0j
+
+            return Q_maps    
+
+        def compute_Q_Ainv():
+            """
+            Assemble and return the Q [ = partial_l,b . xi . weighting . a] maps in Fourier-space.
+            """
+            
+            # Define k filter
+            filt = lambda ki: (self.base.modk_grid>=k_bins_theory[ki])*(self.base.modk_grid<k_bins_theory[ki+1])
+            
+            # Compute A^-1 a
+            weighted_map_fourier = self.base.applyAinv(a_map_fourier, input_type='fourier', output_type='fourier')
+
+            # Define real-space map (where necessary), and drop Fourier-modes out of range
+            if self.base.sightline=='local' and self.lmax>0:
+                weighted_map_real = self.base.to_real(weighted_map_fourier)
+            
+            # Define arrays
+            Q_maps = np.zeros((N_bins_th,self.base.gridsize.prod()),dtype='complex')
+
+            # Compute Q derivative for the monopole, optionally adding S^-1.W weighting
+            for ki in range(Nk_th):
+                Q_maps[ki,:] = (weighted_map_fourier*filt(ki)).ravel()
+    
+            # Repeat for higher-order multipoles
+            for li in range(1,self.Nl):
+
+                if self.base.sightline=='global':
+                    # Compute L_ell(mu)* A-1 a
+                    leg_map = weighted_map_fourier*legendre(li*2)(self.muk_grid)
+
+                    # Add to bins
+                    for ki in range(Nk_th):
+                        Q_maps[li*Nk_th+ki,:] = (leg_map*filt(ki)).ravel()                           
+        
+                else:
+                    
+                    # First part: (-1)^l Theta_b(k) Sum_m Y_lm(k)* [U^-1 a]_lm(k)
+                    leg_map = np.sum([Ylm_fourier[(2-self.odd_l)*li][lm_ind]*self.base.to_fourier(weighted_map_real*self.Ylm_real[(2-self.odd_l)*li][lm_ind]) for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li]))],axis=0)
+
+                    # Add phase for odd ell
+                    if (self.odd_l and li%2==1):
+                        leg_map *= -1
+
+                    # Add to bins
+                    for ki in range(Nk_th):
+                        
+                        # Add first part, absorbing second by symmetry
+                        Q_maps[li*Nk_th+ki,:] += (leg_map*filt(ki)).ravel()
+                        
+                        # Add 1.0j to imaginary parts to keep maps real
+                        if (self.odd_l and li%2==1):
+                            Q_maps[li*Nk_th+ki] *= 1.0j
+
+            
+            return Q_maps    
+                                                        
+        if verb: print("Computing W^T.S^-T.Q[S^-1.W.a] maps")
+        Q_Sinv = compute_Q_Sinv()
+
+        if verb: print("Computing Q[A^-1.a] maps")
+        Q_Ainv = compute_Q_Ainv()
+
+        # Assemble Fisher matrix
+        if verb: print("Assembling binning matrix\n")
+
+        # Compute binning matrix as an outer product
+        binning_matrix = 0.5*np.real(np.matmul(Q_Sinv.conj(),Q_Ainv.T))*self.base.volume/self.base.gridsize.prod()**2
+
+        return binning_matrix
