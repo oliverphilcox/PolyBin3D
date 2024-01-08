@@ -12,22 +12,32 @@ PolyBin contains the following modules:
 The basic usage is the following:
 ```
   # Import code
-  import PolyBin3D as pb
+import PolyBin3D as pb
+import numpy as np
 
-  # Load base class
-  base = pb.PolyBin3D()
+# Load base class
+base = pb.PolyBin3D(boxsize, # dimensions of box 
+                    gridsize, # dimensions of Fourier-space grid, 
+                    boxcenter=[0,0,0], # center of simulation box
+                    pixel_window='tsc', # pixel window function
+                    sightline='global') # redshift-space axis                    
 
-  # Load power spectrum class
-  pspec = pb.PSpec()
+# Load power spectrum class
+pspec = pb.PSpec(base, 
+                 k_bins, # k-bin edges
+                 lmax, # Legendre multipoles
+                 mask, # real-space mask
+                 applySinv, # filter to apply to data
+                )
 
-  # Compute Fisher matrix and shot-noise using Monte Carlo simulations (should usually be parallelized)
-  fish, shot_num = pspec.compute_fisher(10, N_cpus=1, verb=True)
+# Compute Fisher matrix and shot-noise using Monte Carlo simulations (should usually be parallelized)
+fish, shot_num = pspec.compute_fisher(10, N_cpus=1, verb=True)
 
-  # Compute windowed power spectra
-  Pk_ideal = pspec.Pk_ideal(data) 
+# Compute windowed power spectra
+Pk_ideal = pspec.Pk_ideal(data) 
 
-  # Compute power spectrum of the data
-  Pk_unwindowed = pspec.Pk_unwindowed(data, fish=fish, shot_num=shot_num)
+# Compute power spectrum of the data
+Pk_unwindowed = pspec.Pk_unwindowed(data, fish=fish, shot_num=shot_num, subtract_shotnoise=False)
 ```
 
 Further details are described in the tutorials, which descibe
