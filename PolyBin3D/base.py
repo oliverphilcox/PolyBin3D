@@ -231,12 +231,12 @@ class PolyBin3D():
         return Ylms
 
     # Gaussian random field routines
-    def generate_data(self, seed=None, Pk_input=[], output_type='real'):
+    def generate_data(self, seed=None, Pk_input=[], output_type='real', include_pixel_window=True):
         """
         Generate a Gaussian periodic map with a given set of P(k) multipoles (or the fiducial power spectrum monopole, if unspecified). 
         The input Pk are expected to by in the form {k, P_0, [P_2], [P_4]}, where P_2, P_4 are optional.
 
-        No mask is added at this stage (except for a pixelation window), and the output can be in real- or Fourier-space.
+        No mask is added at this stage (except for a pixelation window, unless include_pixel_window=False), and the output can be in real- or Fourier-space.
         """
         assert output_type in ['fourier','real'], "Valid output types are 'fourier' and 'real' only!"
         
@@ -262,7 +262,7 @@ class PolyBin3D():
         rand_fourier[self.modk_grid==0] = 0.
 
         # Add pixel window function to delta(k)
-        if self.pixel_window!='none':
+        if self.pixel_window!='none' and include_pixel_window:
             rand_fourier *= self.pixel_window_grid
         
         # Force map to be real and normalize

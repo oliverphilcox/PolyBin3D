@@ -8,7 +8,7 @@ from scipy.special import legendre
 
 class PSpec():
     """Power spectrum estimation class. This takes a set of k-bins as input and a base class. 
-    We also feed in a function that applies the S^-1 operator. 
+    We can also feed in a function that applies the S^-1 operator. 
     
     Inputs:
     - base: PolyBin class
@@ -16,7 +16,7 @@ class PSpec():
     - lmax: (optional) maximum Legendre multipole, default: 4.
     - mask: (optional) 3D mask to deconvolve.
     - applySinv: (optional) function which returns S^-1 ( ~ [Mask*2PCF + 1]^-1 ) applied to a given input data field. This is only needed for unwindowed estimators.
-    - odd_l: (optional) whether to include odd ell-modes in the estimator, deafult: False. Only relevant for local lines-of-sight.
+    - odd_l: (optional) whether to include odd ell-modes in the estimator, default: False. Only relevant for local lines-of-sight.
     """
     def __init__(self, base, k_bins, lmax=4, mask=None, applySinv=None, odd_l=False):
         # Read in attributes
@@ -77,12 +77,12 @@ class PSpec():
         # Define spherical harmonics [for computing power spectrum multipoles]
         if self.base.sightline=='local' and self.lmax>0:
             print("Generating spherical harmonics")
-            self.Ylm_real = self.base._compute_real_harmonics(self.base.r_grids,self.lmax, odd_l=self.odd_l)
-            self.Ylm_fourier = self.base._compute_real_harmonics(np.asarray(self.base.k_grids)[:,self.k_filt],self.lmax, odd_l=self.odd_l)
+            self.Ylm_real = self.base._compute_real_harmonics(self.base.r_grids, self.lmax, odd_l=self.odd_l)
+            self.Ylm_fourier = self.base._compute_real_harmonics(np.asarray(self.base.k_grids)[:,self.k_filt], self.lmax, odd_l=self.odd_l)
         
         # Define k filters
-        self.k_filters = [(self.modk_grid>=self.k_bins[b])&(self.modk_grid<self.k_bins[b+1]) for b in range(self.Nk)]
-        self.all_k_filters = np.stack(self.k_filters)
+        k_filters = [(self.modk_grid>=self.k_bins[b])&(self.modk_grid<self.k_bins[b+1]) for b in range(self.Nk)]
+        self.all_k_filters = np.stack(k_filters)
         
     def get_ks(self):
         """
@@ -344,7 +344,7 @@ class PSpec():
         """
         Compute the unwindowed power spectrum estimator. 
         
-        Note that the Fisher matrix and shot-noise terms must be computed before this is run, or it can be supplied separately.
+        Note that the Fisher matrix and shot-noise terms must be computed before this is run, or they can be supplied separately.
         
         The Poisson shot-noise can be optionally subtracted. We return the imaginary part of any ell=odd spectra.
         """
@@ -363,7 +363,7 @@ class PSpec():
             self.shot = np.matmul(self.inv_fish,self.shot_num)
         
         if not hasattr(self,'inv_fish'):
-            raise Exception("Need to compute Fisher matrix and shot-noise first!")
+            raise Exception("Need to compute Fisher matrix first!")
         
         if not hasattr(self,'shot') and subtract_shotnoise:
             raise Exception("Need to compute shot-noise first!")
@@ -447,9 +447,11 @@ class PSpec():
         
         return Pk_out
                 
-    def compute_fisher_ideal(self):
+    def compute_fisher_ideal(self, discreteness_correction=True):
         """This computes the idealized Fisher matrix for the power spectrum, weighting by 1/P_fid(k) within each bin. 
         
+        We optionally include discreteness correction for ell>0.
+    
         If 'local' sightlines are being used, this assumes the distant-observer approximation.
         """
         print("Computing ideal Fisher matrix")
@@ -460,33 +462,46 @@ class PSpec():
         # Define squared inverse-fiducial P(k), filtering to modes of interest
         sq_inv_Pk = self.base.invPk0_grid[self.k_filt]**2.
         
-        # Iterate over fields
-        for la in range(self.Nl_even):
-            if la==0:
-                lega = 1
-            else:
-                lega = legendre(2*la)(self.muk_grid)
-            for lb in range(self.Nl_even):
-                if lb==0:
-                    legab = lega
+        if discreteness_correction:
+
+            # Iterate over fields
+            for la in range(self.Nl_even):
+                if la==0:
+                    lega = 1
                 else:
-                    legab = lega*legendre(2*lb)(self.muk_grid)
-                # Assemble fisher matrix
-                fish_diag = 0.5*np.sum(sq_inv_Pk*legab*self.all_k_filters,axis=1)
-                
+                    lega = legendre(2*la)(self.muk_grid)
+                for lb in range(self.Nl_even):
+                    if lb==0:
+                        legab = lega
+                    else:
+                        legab = lega*legendre(2*lb)(self.muk_grid)
+                    # Assemble fisher matrix
+                    fish_diag = 0.5*np.sum(sq_inv_Pk*legab*self.all_k_filters,axis=1)
+                    
+                    # Add to output array
+                    fish[la*self.Nk:(la+1)*self.Nk,lb*self.Nk:(lb+1)*self.Nk] = np.diag(fish_diag)
+
+        else:
+            # Replace Int L_ell(k.n) L_ell'(k.n) by 1/(2 ell + 1) Kronecker[ell, ell']
+            
+            # Iterate over fields
+            for la in range(self.Nl_even):
+                    
                 # Add to output array
-                fish[la*self.Nk:(la+1)*self.Nk,lb*self.Nk:(lb+1)*self.Nk] = np.diag(fish_diag)
-                
+                fish[la*self.Nk:(la+1)*self.Nk,la*self.Nk:(la+1)*self.Nk] = np.diag(0.5*np.sum(sq_inv_Pk*self.all_k_filters,axis=1)/(4.*la+1.))
+                    
         self.fish_ideal = fish
         self.inv_fish_ideal = np.linalg.inv(self.fish_ideal)
         
         return fish
     
-    def Pk_ideal(self, data, fish_ideal=[]):
+    def Pk_ideal(self, data, fish_ideal=[], discreteness_correction=True):
         """Compute the (normalized) idealized power spectrum estimator, weighting by 1/P_fid(k) within each bin. 
         
         The estimator does *not* use the mask or S_inv weighting schemes (except for normalizing by < mask^2 >. It also applies only for even ell.
         
+        We optionally include discreteness corrections in the Fisher matrix for ell>0.
+    
         This can compute the ideal power spectrum of simulation volumes, or, for suitably normalized input, the FKP power spectrum.
         """
 
@@ -495,7 +510,7 @@ class PSpec():
             self.inv_fish_ideal = np.linalg.inv(fish_ideal)
 
         if not hasattr(self,'inv_fish_ideal'):
-            self.compute_fisher_ideal()
+            self.compute_fisher_ideal(discreteness_correction=discreteness_correction)
 
         # Compute numerator
         Pk_num_ideal = self.Pk_numerator_ideal(data)
