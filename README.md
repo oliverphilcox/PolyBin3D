@@ -1,5 +1,5 @@
 # PolyBin3D
-PolyBin3D is a Python code that estimates the binned power spectrum, bispectrum, and trispectrum for 3D fields such as the distributions of matter and galaxies, using the algorithms of [Philcox 2020](https://arxiv.org/abs/2012.09389), [Philcox 2021](https://arxiv.org/abs/2107.06287) and [Ivanov et al. 2023](https://arxiv.org/abs/2302.04414). It is a sister code to [PolyBin](https://github.com/oliverphilcox/PolyBin), which computes the polyspectra of data on the two-sphere and is a modern reimplementation of the former [Spectra-Without-Windows](https://github.com/oliverphilcox/Spectra-Without-Windows) code. 
+PolyBin3D is a Python code that estimates the binned power spectrum and bispectrum for 3D fields such as the distributions of matter and galaxies, using the algorithms of [Philcox 2020](https://arxiv.org/abs/2012.09389), [Philcox 2021](https://arxiv.org/abs/2107.06287), [Ivanov et al. 2023](https://arxiv.org/abs/2302.04414) and Philcox et al. (in prep). It is a sister code to [PolyBin](https://github.com/oliverphilcox/PolyBin), which computes the polyspectra of data on the two-sphere and is a modern reimplementation of the former [Spectra-Without-Windows](https://github.com/oliverphilcox/Spectra-Without-Windows) code. 
 
 For each statistic, two estimators are available: the standard (ideal) estimators, which do not take into account the mask, and window-deconvolved estimators. In the second case, we require computation of a Fisher matrix; this depends on binning and the mask, but does not need to be recomputed for each new simulation. 
 
@@ -7,7 +7,7 @@ PolyBin contains the following modules:
 - `pspec`: Binned power spectra
 - `bspec`: Binned bispectra
 
-The basic usage is the following:
+The basic usage of the power spectrum class is the following:
 ```
 # Import code
 import PolyBin3D as pb
@@ -34,26 +34,45 @@ fish, shot_num = pspec.compute_fisher(10, N_cpus=1, verb=True)
 # Compute windowed power spectra
 Pk_ideal = pspec.Pk_ideal(data) 
 
-# Compute power spectrum of the data
+# Compute unwindowed power spectra, using the Fisher matrix we just computed
 Pk_unwindowed = pspec.Pk_unwindowed(data, fish=fish, shot_num=shot_num, subtract_shotnoise=False)
+```
+
+Bispectra can be computed similarly:
+```
+# Load bispectrum class
+bspec = pb.BSpec(base, 
+                 k_bins, # k-bin edges
+                 lmax, # Legendre multipoles
+                 mask, # real-space mask
+                 applySinv, # filter to apply to data
+                )
+
+# Compute Fisher matrix using Monte Carlo simulations (should usually be parallelized)
+fish = bspec.compute_fisher(10, N_cpus=1, verb=True)
+
+# Compute windowed bispectra
+Bk_ideal = bspec.Bk_ideal(data) 
+
+# Compute unwindowed bispectra using the Fisher matrix we just computed
+Bk_unwindowed = bspec.Bk_unwindowed(data, fish=fish, include_linear_term=False)
 ```
 
 Further details are described in the tutorials, which descibe
 1. [Introduction](Tutorial%201%20-%20Pk%20from%20Simulations%20.ipynb) to PolyBin3D, and computing the power spectrum from simulations
-2. [Validation](Tutorial%202%20-%20Validating%20the%20Unwindowed%20Pk%20Estimators.ipynb) of the window-deconvolved power spectrum estimators on simulations
-3. [Application](Tutorial%203%20-%20BOSS%20Pk%20Multipoles.ipynb) of the power spectrum esitmators to the BOSS DR12 dataset.
-
+2. [Validation](Tutorial%202%20-%20Validating%20the%20Unwindowed%20Pk%20Estimators.ipynb) of the window-deconvolved power spectrum estimators
+3. [Application](Tutorial%203%20-%20BOSS%20Pk%20Multipoles.ipynb) of the power spectrum esitmators to the BOSS DR12 dataset
+4. [Introduction](Tutorial%201%20-%20Bk%20from%20Simulations%20.ipynb) to computing bispectra from simulations
+5. [Validation](Tutorial%202%20-%20Validating%20the%20Unwindowed%20Bk%20Estimators.ipynb) of the window-deconvolved bispectrum estimators
 
 ## Authors
 - [Oliver Philcox](mailto:ohep2@cantab.ac.uk) (Columbia / Simons Foundation)
-
 
 ## Dependencies
 - Python 2/3
 - numpy, scipy
 - fftw [for FFTs]
 - Nbodykit [not required, but useful for testing]
-
 
 ## References
 **Code references:**

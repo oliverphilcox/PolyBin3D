@@ -471,7 +471,7 @@ class BSpec():
             The outputs are either Q_alpha or S^-1.W.Q_alpha, added to the Q_maps arrays. We also add a phase +- 1.
             """
 
-            k_maps = np.zeros((len(Q_maps), self.base.gridsize[0], self.base.gridsize[0], self.base.gridsize[0]), dtype='complex')
+            k_maps = np.zeros((len(Q_maps), self.base.gridsize[0], self.base.gridsize[1], self.base.gridsize[2]), dtype='complex')
 
             # Weight maps appropriately
             if weighting=='Sinv':
