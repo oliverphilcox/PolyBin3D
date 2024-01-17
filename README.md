@@ -58,12 +58,12 @@ Bk_ideal = bspec.Bk_ideal(data)
 Bk_unwindowed = bspec.Bk_unwindowed(data, fish=fish, include_linear_term=False)
 ```
 
-Further details are described in the tutorials, which descibe
-1. [Introduction](Tutorial%201%20-%20Pk%20from%20Simulations%20.ipynb) to PolyBin3D, and computing the power spectrum from simulations
-2. [Validation](Tutorial%202%20-%20Validating%20the%20Unwindowed%20Pk%20Estimators.ipynb) of the window-deconvolved power spectrum estimators
-3. [Application](Tutorial%203%20-%20BOSS%20Pk%20Multipoles.ipynb) of the power spectrum esitmators to the BOSS DR12 dataset
-4. [Introduction](Tutorial%204%20-%20Bk%20from%20Simulations%20.ipynb) to computing bispectra from simulations
-5. [Validation](Tutorial%205%20-%20Validating%20the%20Unwindowed%20Bk%20Estimators.ipynb) of the window-deconvolved bispectrum estimators
+Further details are described in the tutorials, which describe
+- [Tutorial 1](Tutorial%201%20-%20Pk%20from%20Simulations.ipynb): introduction to PolyBin3D, and computing the power spectrum from simulations
+- [Tutorial 2](Tutorial%202%20-%20Validating%20the%20Unwindowed%20Pk%20Estimators.ipynb): validation of the window-deconvolved power spectrum estimators
+- [Tutorial 3](Tutorial%203%20-%20BOSS%20Pk%20Multipoles.ipynb): application of the power spectrum esitmators to the BOSS DR12 dataset
+- [Tutorial 4](Tutorial%204%20-%20Bk%20from%20Simulations.ipynb): introduction to computing bispectra
+- [Tutorial 5](Tutorial%205%20-%20Validating%20the%20Unwindowed%20Bk%20Estimators.ipynb): validation of the window-deconvolved bispectrum estimators
 
 ## Authors
 - [Oliver Philcox](mailto:ohep2@cantab.ac.uk) (Columbia / Simons Foundation)
