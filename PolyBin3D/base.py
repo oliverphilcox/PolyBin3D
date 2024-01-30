@@ -20,7 +20,7 @@ class PolyBin3D():
     - nthreads: How many CPUs to use for the FFT calculations. Default: 1.   
     - sightline: Whether to assume local or global line-of-sight. Options: "local" [relative to each pair], "global" [relative to z-axis].   
     """
-    def __init__(self, boxsize, gridsize, Pk=None, boxcenter=[0,0,0], pixel_window='none', backend='fftw', nthreads=1, sightline='local'):
+    def __init__(self, boxsize, gridsize, Pk=None, boxcenter=[0,0,0], pixel_window='none', backend='fftw', nthreads=1, sightline='global'):
         
         # Load attributes
         self.backend = backend
@@ -133,8 +133,8 @@ class PolyBin3D():
             import pyfftw
 
             # Set-up FFT arrays
-            self.fftw_in  = pyfftw.empty_aligned(self.gridsize,dtype='complex64')
-            self.fftw_out = pyfftw.empty_aligned(self.gridsize,dtype='complex64')
+            self.fftw_in  = pyfftw.empty_aligned(self.gridsize,dtype='complex128')
+            self.fftw_out = pyfftw.empty_aligned(self.gridsize,dtype='complex128')
 
             # plan FFTW
             self.fftw_plan = pyfftw.FFTW(self.fftw_in, self.fftw_out, axes=(0,1,2),flags=('FFTW_ESTIMATE',),direction='FFTW_FORWARD', threads=self.nthreads)
