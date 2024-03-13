@@ -513,7 +513,7 @@ class BSpec():
 
             # Iterate over quadratic pairs of bins, starting with longer side
             for binB in range(self.Nk_squeeze):
-                if verb: print("Computing matrix for k-bin %d of %d"%(binB+1,self.Nk_squeeze))
+                if verb: print("Computing matrix for k-bin %d of %d"%(binB,self.Nk_squeeze))
             
                 # Compute all g_bB_l maps
                 g_bBl_maps = [g_b0_maps[binB]]
