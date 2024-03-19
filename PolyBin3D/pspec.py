@@ -262,20 +262,25 @@ class PSpec():
                     # Add to bins
                     for ki in range(self.Nk):
                         
-                        # Add first part
-                        Q_maps[li*self.Nk+ki,:] += 0.5*_apply_weighting(leg_map*filt(ki), real=False).ravel()
+                        if weighting=='Sinv':
+                            # Add both parts at once, invoking symmetry of the averaged expression
+                            Q_maps[li*self.Nk+ki,:] += _apply_weighting(leg_map*filt(ki), real=False).ravel()
+                        
+                        elif weighting=='Ainv':
+                            # Add first part
+                            Q_maps[li*self.Nk+ki,:] += 0.5*_apply_weighting(leg_map*filt(ki), real=False).ravel()
 
-                        # Second part: Sum_m Y_lm (x) Int_k e^ik.x Theta_b(k) Y_lm(k)*[U^-1 a](k)                        
-                        real_map = np.zeros(self.base.gridsize,dtype='complex')
-                        for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li])):
-                            # Cast to full Fourier-space map
-                            k_map = np.zeros(self.base.gridsize,dtype='complex')
-                            k_map[self.k_filt] = weighted_map_fourier*self.Ylm_fourier[(2-self.odd_l)*li][lm_ind]*filt(ki)
-                            real_map += self.base.to_real(k_map)*self.Ylm_real[(2-self.odd_l)*li][lm_ind]
-                        
-                        # Add second part, using the real-space map [which fills all Fourier modes, not just those in [k_min, k_max]]
-                        Q_maps[li*self.Nk+ki,:] += 0.5*_apply_weighting(real_map, real=True).ravel()
-                        
+                            # Second part: Sum_m Y_lm (x) Int_k e^ik.x Theta_b(k) Y_lm(k)*[U^-1 a](k)                        
+                            real_map = np.zeros(self.base.gridsize,dtype='complex')
+                            for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li])):
+                                # Cast to full Fourier-space map
+                                k_map = np.zeros(self.base.gridsize,dtype='complex')
+                                k_map[self.k_filt] = weighted_map_fourier*self.Ylm_fourier[(2-self.odd_l)*li][lm_ind]*filt(ki)
+                                real_map += self.base.to_real(k_map)*self.Ylm_real[(2-self.odd_l)*li][lm_ind]
+                            
+                            # Add second part, using the real-space map [which fills all Fourier modes, not just those in [k_min, k_max]]
+                            Q_maps[li*self.Nk+ki,:] += 0.5*_apply_weighting(real_map, real=True).ravel()
+                            
                         # Add 1.0j to imaginary parts to keep maps real
                         if (self.odd_l and li%2==1):
                             Q_maps[li*self.Nk+ki] *= 1.0j

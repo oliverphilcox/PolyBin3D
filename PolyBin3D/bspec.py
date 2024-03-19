@@ -533,7 +533,7 @@ class BSpec():
                     # Compute FT[g_{0, bA},g_{ell, bB}] for all ell
                     ft_ABl = [self.base.to_fourier(g_b0_maps[binA]*g_bBl_maps[l//2]) for l in range(0, self.lmax+1, 2)]
 
-                    def add_Q_element(binC_index, these_ind, largest_l=True):
+                    def add_Q_element(binC_index, these_ind, largest_l=True, factor=2):
                         # Iterate over these elements and add to the output arrays
                         for ii in these_ind:
                             binC = indices[ii,binC_index]
@@ -541,27 +541,31 @@ class BSpec():
 
                             # Monopole
                             if l==0:
-                                k_maps[ii] += 2.*self.bin_filt(binC)*ft_ABl[0]
+                                k_maps[ii] += factor*self.bin_filt(binC)*ft_ABl[0]
                             else:
                                 # Apply legendre to external or internal leg
                                 if largest_l:
                                     binC_ftAB = self.bin_filt(binC)*ft_ABl[0]
                                     if self.base.sightline=='global':
                                         # Work in Fourier-space for global line-of-sight
-                                        k_maps[ii] += 2.*binC_ftAB*legendre(l)(self.base.muk_grid)
+                                        k_maps[ii] += factor*binC_ftAB*legendre(l)(self.base.muk_grid)
                                     else:
                                         # Work in real-space for Yamamoto line-of-sight
                                         real_map = 0.+0.j
                                         for lm_ind in range(len(self.Ylm_fourier[l])):
                                             real_map += self.Ylm_real[l][lm_ind]*self.base.to_real(binC_ftAB*self.Ylm_fourier[l][lm_ind])
-                                        k_maps[ii] += 2.*self.base.to_fourier(real_map)
+                                        k_maps[ii] += factor*self.base.to_fourier(real_map)
                                 else:
-                                    k_maps[ii,:] += 2.*self.bin_filt(binC)*ft_ABl[l//2]
+                                    k_maps[ii,:] += factor*self.bin_filt(binC)*ft_ABl[l//2]
 
                     # add elements, noting that the symmetries differ for each permutation
-                    add_Q_element(3, these_ind1, True) 
-                    add_Q_element(1, these_ind2, False)
-                    add_Q_element(2, these_ind3, False)
+                    if weighting=='Sinv':
+                        # Add all simultaneously, given symmetries
+                        add_Q_element(2, these_ind3, False, 6)
+                    elif weighting=='Ainv':
+                        add_Q_element(3, these_ind1, True, 2) 
+                        add_Q_element(1, these_ind2, False, 2)
+                        add_Q_element(2, these_ind3, False, 2)
 
             # Optionally add S^-1. W weighting to maps
             if weighting=='Ainv':
