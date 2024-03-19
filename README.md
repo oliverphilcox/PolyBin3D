@@ -76,9 +76,8 @@ Further details are described in the tutorials, which describe
 
 ## References
 **Code references:**
-1. Philcox, O. H. E., *et al.* (in prep): "PolyBin3D: A Suite of Optimal and Efficient Power Spectrum and Bispectrum Estimators for
-Large-Scale Structure"
-2. Philcox, O. H. E., "Cosmology Without Windows: Quadratic Estimators for the Galaxy Power Spectrum", (2020) ([arXiv](https://arxiv.org/abs/2012.09389))
+1. **Philcox, O. H. E., et al. (in prep): "PolyBin3D: A Suite of Optimal and Efficient Power Spectrum and Bispectrum Estimators for Large-Scale Structure"**
+2. Philcox, O. H. E., "Cosmology Without Window Functions: Quadratic Estimators for the Galaxy Power Spectrum", (2020) ([arXiv](https://arxiv.org/abs/2012.09389))
 3. Philcox, O. H. E., "Cosmology Without Window Functions: Cubic Estimators for the Galaxy Bispectrum", (2021) ([arXiv](https://arxiv.org/abs/2107.06287))
 4. Ivanov, M. M., Philcox, O. H. E., et al. "Cosmology with the Galaxy Bispectrum Multipoles: Optimal Estimation and Application to BOSS Data" (2023) ([arXiv](https://arxiv.org/abs/2302.04414))
 
