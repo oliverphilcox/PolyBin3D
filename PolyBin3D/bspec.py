@@ -5,6 +5,7 @@ import numpy as np
 import multiprocessing as mp
 import tqdm
 from scipy.special import legendre
+import time
 
 class BSpec():
     """Bispectrum estimation class. This takes the binning strategy as input and a base class. 
@@ -81,6 +82,15 @@ class BSpec():
             
         # Create function for filtering to a specific k-bin
         self.bin_filt = lambda b: (self.base.modk_grid>=self.k_bins_squeeze[b])&(self.base.modk_grid<self.k_bins_squeeze[b+1])
+        self.bin_filts = self.base.np.array([self.bin_filt(b) for b in range(self.Nk_squeeze)])
+        self.bin_filt = lambda b: self.bin_filts[b]
+
+        # Define legendre polynomials [for computing bispectrum multipoles]
+        if self.base.sightline=='global' and self.lmax>0:
+            self.legendres = {}
+            self.legendres[0] = 1.
+            for ell in range(2,self.lmax+1,2):
+                self.legendres[ell] = legendre(ell)(self.base.muk_grid)
         
         # Define spherical harmonics in real-space [for computing bispectrum multipoles]
         if self.base.sightline=='local' and self.lmax>0:
@@ -190,7 +200,12 @@ class BSpec():
             for l in range(2,self.lmax+1,2):
 
                 # Define Legendre-weighted binning functions
-                bin23_l = [np.sum([self.base.to_real(self.bin_filt(b)*self.base.invPk0_grid*self.Ylm_fourier[l][lm_ind])**2. for lm_ind in range(len(self.Ylm_fourier[l]))], axis=0) for b in range(self.Nk_squeeze)]
+                bin23_l = []
+                for b in range(self.Nk_squeeze):
+                    bin23_l_temp = 0.
+                    for lm_ind in range(len(self.Ylm_fourier[l])): 
+                        bin23_l_temp += self.base.to_real(self.bin_filt(b)*self.base.invPk0_grid*self.Ylm_fourier[l][lm_ind])**2.
+                    bin23_l.append(bin23_l_temp)
 
                 # Iterate over bins
                 for bin1 in range(self.Nk):
@@ -250,14 +265,16 @@ class BSpec():
 
                 # Define Legendre L_ell(k.n) weighting
                 if self.base.sightline=='global':
-                    leg_map = legendre(l)(self.base.muk_grid)*Sinv_sim_fourier
+                    leg_map = self.legendres[l]*Sinv_sim_fourier
                 else:
-                     leg_map = np.sum([self.Ylm_fourier[l][lm_ind]*self.base.to_fourier(Sinv_sim_real*self.Ylm_real[l][lm_ind]) for lm_ind in range(len(self.Ylm_fourier[l]))],axis=0)
+                    leg_map = 0.
+                    for lm_ind in range(len(self.Ylm_fourier[l])):
+                        leg_map += self.Ylm_fourier[l][lm_ind]*self.base.to_fourier(Sinv_sim_real*self.Ylm_real[l][lm_ind])
 
                 # Compute spherical harmonics for this order
                 g_bl_maps.append([self.base.to_real(self.bin_filt(b)*leg_map).conj() for b in range(self.Nk_squeeze)])
 
-        return g_bl_maps
+        return np.array(g_bl_maps)
 
     def load_sims(self, load_sim, N_sims, verb=False, input_type='real', preload=True):
         """
@@ -387,13 +404,15 @@ class BSpec():
             if l==0:
                 leg_map = Sinv_data_fourier
             elif self.base.sightline=='global':
-                leg_map = legendre(l)(self.base.muk_grid)*Sinv_data_fourier
+                leg_map = self.legendres[l]*Sinv_data_fourier
             else:
-                 leg_map = np.sum([self.Ylm_fourier[l][lm_ind]*self.base.to_fourier(Sinv_data_real*self.Ylm_real[l][lm_ind]) for lm_ind in range(len(self.Ylm_fourier[l]))],axis=0)
+                leg_map = 0.
+                for lm_ind in range(len(self.Ylm_fourier[l])):
+                    leg_map += self.Ylm_fourier[l][lm_ind]*self.base.to_fourier(Sinv_data_real*self.Ylm_real[l][lm_ind])
 
             # Compute spherical harmonics for this order
             g_bl_maps.append([self.base.to_real(self.bin_filt(b)*leg_map).conj() for b in range(self.Nk_squeeze)])
-
+            
         # Define output array
         B3_num = np.zeros(self.N_bins)
 
@@ -422,7 +441,7 @@ class BSpec():
 
                 # Load processed bias simulations 
                 if self.preload:
-                    this_g_bl_maps = self.g_bl_maps[ii]
+                    this_g_bl_maps = self.base.np.array(self.g_bl_maps[ii])
                 else:
                     this_g_bl_maps = self.load_sim_data(ii)
 
@@ -437,7 +456,7 @@ class BSpec():
                                 out  = np.sum(g_bl_maps[0][bin1]*this_g_bl_maps[0][bin2]*this_g_bl_maps[l//2][bin3]).real
                                 out += np.sum(this_g_bl_maps[0][bin1]*g_bl_maps[0][bin2]*this_g_bl_maps[l//2][bin3]).real
                                 out += np.sum(this_g_bl_maps[0][bin1]*this_g_bl_maps[0][bin2]*g_bl_maps[l//2][bin3]).real
-                                B1_num[index] += -np.sum(out).real/self.N_it
+                                B1_num[index] += -out/self.N_it
                                 index += 1
 
         # Assemble output and add normalization
@@ -471,7 +490,7 @@ class BSpec():
             The outputs are either Q_alpha or S^-1.W.Q_alpha, added to the Q_maps arrays. We also add a phase +- 1.
             """
 
-            k_maps = np.zeros((len(Q_maps), self.base.gridsize[0], self.base.gridsize[1], self.base.gridsize[2]), dtype='complex')
+            k_maps = np.zeros((len(Q_maps), self.base.gridsize[0], self.base.gridsize[1], self.base.gridsize[2]), dtype=np.complex64)
 
             # Weight maps appropriately
             if weighting=='Sinv':
@@ -507,14 +526,17 @@ class BSpec():
             leg_maps = [weighted_map_fourier]
             for ell in range(2, self.lmax+1, 2):
                 if self.base.sightline=='global':
-                    leg_maps.append(legendre(ell)(self.base.muk_grid)*weighted_map_fourier)
+                    leg_maps.append(self.legendres[ell]*weighted_map_fourier)
                 else:
-                    leg_maps.append(np.sum([self.Ylm_fourier[ell][lm_ind]*self.base.to_fourier(weighted_map_real*self.Ylm_real[ell][lm_ind]) for lm_ind in range(len(self.Ylm_fourier[ell]))],axis=0))
-
+                    leg_map = 0.
+                    for lm_ind in range(len(self.Ylm_fourier[ell])):
+                        leg_map += self.Ylm_fourier[ell][lm_ind]*self.base.to_fourier(weighted_map_real*self.Ylm_real[ell][lm_ind])
+                    leg_maps.append(leg_map)
+                    
             # Iterate over quadratic pairs of bins, starting with longer side
             for binB in range(self.Nk_squeeze):
                 if verb: print("Computing matrix for k-bin %d of %d"%(binB+1,self.Nk_squeeze))
-            
+
                 # Compute all g_bB_l maps
                 g_bBl_maps = [g_b0_maps[binB]]
                 for ell in range(2,self.lmax+1,2):
@@ -548,7 +570,7 @@ class BSpec():
                                     binC_ftAB = self.bin_filt(binC)*ft_ABl[0]
                                     if self.base.sightline=='global':
                                         # Work in Fourier-space for global line-of-sight
-                                        k_maps[ii] += factor*binC_ftAB*legendre(l)(self.base.muk_grid)
+                                        k_maps[ii] += factor*binC_ftAB*self.legendres[l]
                                     else:
                                         # Work in real-space for Yamamoto line-of-sight
                                         real_map = 0.+0.j
@@ -571,18 +593,18 @@ class BSpec():
             if weighting=='Ainv':
                 for i in range(len(Q_maps)):
                     if self.const_mask:
-                        Q_maps[i] += phase*(self.applySinv(k_maps[i],input_type='fourier',output_type='fourier')*self.mask_mean).ravel()                       
+                        Q_maps[i] += phase*(self.applySinv(k_maps[i],input_type='fourier',output_type='fourier')*self.mask_mean).ravel()         
                     else:
                         Q_maps[i] += phase*(self.applySinv(self.mask*self.base.to_real(k_maps[i]),input_type='real',output_type='fourier')).ravel()
             else:
                 Q_maps += phase*k_maps.reshape(len(k_maps),-1)
-
             # End of function
             return
 
         # Set-up arrays
-        Q_Sinv = np.zeros((self.N_bins,self.base.gridsize.prod()),dtype='complex')
-        Q_Ainv = np.zeros((self.N_bins,self.base.gridsize.prod()),dtype='complex') 
+        Q_Sinv = np.zeros((self.N_bins,self.base.gridsize.prod()),dtype=np.complex64)
+        Q_Ainv = np.zeros((self.N_bins,self.base.gridsize.prod()),dtype=np.complex64) 
+    
         if verb: print("Allocating %.2f GB of memory"%(2*Q_Sinv.nbytes/1024./1024./1024.))    
 
         # Difference two random fields
@@ -715,9 +737,11 @@ class BSpec():
 
                 # Define Legendre L_ell(k.n) weighting
                 if self.base.sightline=='global':
-                    leg_map = legendre(l)(self.base.muk_grid)*data_fourier
+                    leg_map = self.legendres[l]*data_fourier
                 else:
-                     leg_map = np.sum([self.Ylm_fourier[l][lm_ind]*self.base.to_fourier(data_real*self.Ylm_real[l][lm_ind]) for lm_ind in range(len(self.Ylm_fourier[l]))],axis=0)
+                    leg_map = 0.
+                    for lm_ind in range(len(self.Ylm_fourier[l])):
+                        leg_map += self.Ylm_fourier[l][lm_ind]*self.base.to_fourier(data_real*self.Ylm_real[l][lm_ind])
 
                 # Compute spherical harmonics for this order
                 g_bl_maps = [self.base.to_real(self.bin_filt(b)*leg_map).conj() for b in range(self.Nk_squeeze)]
@@ -761,7 +785,7 @@ class BSpec():
             
         if discreteness_correction:
             # Include finite grid effects
-            bins_l = [[self.base.to_real(self.bin_filt(b)*self.base.invPk0_grid*legendre(l)(self.base.muk_grid)) for b in range(self.Nk_squeeze)] for l in np.arange(0,self.lmax+1,2)]
+            bins_l = [[self.base.to_real(self.bin_filt(b)*self.base.invPk0_grid*self.legendres[l]) for b in range(self.Nk_squeeze)] for l in np.arange(0,self.lmax+1,2)]
 
             # Iterate over Legendre multipoles
             for l in range(0, self.lmax+1, 2):
@@ -769,7 +793,7 @@ class BSpec():
                     if verb: print("Computing Fisher for (l, l') = (%d, %d)"%(l,lp))
 
                     # Compute double Legendre-weighted data
-                    bins_llp = [self.base.to_real(self.bin_filt(b)*self.base.invPk0_grid*legendre(l)(self.base.muk_grid)*legendre(lp)(self.base.muk_grid)) for b in range(self.Nk_squeeze)]
+                    bins_llp = [self.base.to_real(self.bin_filt(b)*self.base.invPk0_grid*self.legendres[l]*self.legendres[lp]) for b in range(self.Nk_squeeze)]
 
                     i = 0
                     for bin1 in range(self.Nk):
