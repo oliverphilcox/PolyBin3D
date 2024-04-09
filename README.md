@@ -3,7 +3,7 @@ PolyBin3D is a Python code that estimates the binned power spectrum and bispectr
 
 For each statistic, two estimators are available: the standard (ideal) estimators, which do not take into account the mask, and window-deconvolved estimators. In the second case, we require computation of a Fisher matrix; this depends on binning and the mask, but does not need to be recomputed for each new simulation.
 
-The code supports GPU acceleration using JAX, which can be enabled using the 'backend' argument in the 'base' class, as demonstrated below.
+The code supports GPU acceleration using JAX, which can be enabled using the `backend` argument in the `base` class, as demonstrated below.
 
 PolyBin contains the following modules:
 - `pspec`: Binned power spectra
