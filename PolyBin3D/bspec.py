@@ -200,7 +200,6 @@ class BSpec():
             for l in range(2,self.lmax+1,2):
 
                 # Define Legendre-weighted binning functions
-                # bin23_l = [np.sum([self.base.to_real(self.bin_filt(b)*self.base.invPk0_grid*self.Ylm_fourier[l][lm_ind])**2. for lm_ind in range(len(self.Ylm_fourier[l]))], axis=0) for b in range(self.Nk_squeeze)]
                 bin23_l = []
                 for b in range(self.Nk_squeeze):
                     bin23_l_temp = 0.
@@ -457,7 +456,6 @@ class BSpec():
                                 out  = np.sum(g_bl_maps[0][bin1]*this_g_bl_maps[0][bin2]*this_g_bl_maps[l//2][bin3]).real
                                 out += np.sum(this_g_bl_maps[0][bin1]*g_bl_maps[0][bin2]*this_g_bl_maps[l//2][bin3]).real
                                 out += np.sum(this_g_bl_maps[0][bin1]*this_g_bl_maps[0][bin2]*g_bl_maps[l//2][bin3]).real
-                                # B1_num[index] += -np.sum(out).real/self.N_it
                                 B1_num[index] += -out/self.N_it
                                 index += 1
 

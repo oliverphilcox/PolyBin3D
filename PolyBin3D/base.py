@@ -276,7 +276,7 @@ class PolyBin3D():
             if len(Pk_input)>3:
                 Pk_grid += legendre(4)(self.muk_grid)*interp1d(Pk_input[0], Pk_input[3], bounds_error=False, fill_value=0.)(self.modk_grid)
         
-        #Generate random Gaussian maps with input P(k)
+        # Generate random Gaussian maps with input P(k)
         rand_fourier = (np.random.randn(*self.gridsize)+1.0j*np.random.randn(*self.gridsize))*np.sqrt(Pk_grid)
         rand_fourier[self.modk_grid==0] = 0.
 
