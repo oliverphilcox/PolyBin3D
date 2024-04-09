@@ -75,7 +75,7 @@ class PSpec():
         if self.lmax>=2:
             self.muk_grid = self.base.muk_grid[self.k_filt]
 
-        if self.base.sightline=='global' and self.lmax>0:
+        if self.lmax>0:
             self.legendres = {}
             self.legendres[0] = 1.
             for ell in range(2,self.lmax+1,2):
