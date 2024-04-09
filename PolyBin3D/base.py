@@ -6,6 +6,7 @@ import multiprocessing as mp
 import tqdm
 from scipy.interpolate import interp1d
 from scipy.special import legendre
+import time
 
 class PolyBin3D():
     """Base class for PolyBin3D.
@@ -139,8 +140,18 @@ class PolyBin3D():
             # plan FFTW
             self.fftw_plan = pyfftw.FFTW(self.fftw_in, self.fftw_out, axes=(0,1,2),flags=('FFTW_ESTIMATE',),direction='FFTW_FORWARD', threads=self.nthreads)
             self.ifftw_plan = pyfftw.FFTW(self.fftw_in, self.fftw_out, axes=(0,1,2),flags=('FFTW_ESTIMATE',),direction='FFTW_BACKWARD', threads=self.nthreads)
+            self.np = np
+            print('# Using fftw backend')
+        elif self.backend=='jax':
+            import jax
+            import jax.numpy as jnp
+            jax.config.update("jax_enable_x64", False)
+            self.np = jnp
+            self.jax = jax
+            print('# Using jax backend')
+            
         else:
-            raise Exception("Only 'fftw' backend is currently implemented!")
+            raise Exception("Only 'fftw' and 'jax' backends are currently implemented!")
         
         # Apply Pk to grid
         self.Pk0_grid = interp1d(self.Pfid[0], self.Pfid[1], bounds_error=False)(self.modk_grid)
@@ -167,6 +178,10 @@ class PolyBin3D():
             self.fftw_plan(self.fftw_in,self.fftw_out)
             # Return output
             return self.fftw_out.copy()
+
+        elif self.backend=='jax':
+            arr = self.np.fft.fftn(_input_rmap,axes=(-3,-2,-1))
+            return arr
         
     def to_real(self, _input_kmap):
         """Transform from Fourier- to real-space."""
@@ -179,6 +194,10 @@ class PolyBin3D():
             self.ifftw_plan(self.fftw_in,self.fftw_out)
             # Return output
             return self.fftw_out.copy()
+
+        elif self.backend=='jax':
+            arr = self.np.fft.ifftn(_input_kmap,axes=(-3,-2,-1))
+            return arr
 
     # Spherical harmonic functions
     def _safe_divide(self, x, y):
@@ -203,13 +222,15 @@ class PolyBin3D():
         if (odd_l and lmax>=1):
             Ylms[1] = np.asarray([yh,
                                     zh,
-                                    xh])
+                                    xh],dtype=np.float64)
+            print("computed l=1")
         if lmax>=2:
             Ylms[2] = np.asarray([6.*xh*yh*np.sqrt(1./12.),
                                     3.*yh*zh*np.sqrt(1./3.),
                                     (zh**2-xh**2/2.-yh**2/2.),
                                     3.*xh*zh*np.sqrt(1./3.),
-                                    (3*xh**2-3*yh**2)*np.sqrt(1./12.)])
+                                    (3*xh**2-3*yh**2)*np.sqrt(1./12.)],dtype=np.float64)
+            print("computed l=2")
         if (odd_l and lmax>=3):
             Ylms[3] = np.asarray([(45.*xh**2*yh-15.*yh**3.)*np.sqrt(1./360.),
                                     (30.*xh*yh*zh)*np.sqrt(1./60.),
@@ -217,7 +238,8 @@ class PolyBin3D():
                                     (-1.5*xh**2*zh-1.5*yh**2*zh+zh**3),
                                     (-1.5*xh**3-1.5*xh*yh**2+6.*xh*zh**2)*np.sqrt(1./6.),
                                     (15.*xh**2*zh-15.*yh**2*zh)*np.sqrt(1./60.),
-                                    (15.*xh**3-45.*xh*yh**2)*np.sqrt(1./360.)])
+                                    (15.*xh**3-45.*xh*yh**2)*np.sqrt(1./360.)],dtype=np.float64)
+            print("computed l=3")
         if lmax>=4:
             Ylms[4] = np.asarray([(420.*xh**3*yh-420.*xh*yh**3)*np.sqrt(1./20160.),
                                     (315.*xh**2*yh*zh-105.*yh**3*zh)*np.sqrt(1./2520.),
@@ -227,7 +249,8 @@ class PolyBin3D():
                                     (-15./2.*xh**3*zh-15.*xh*yh**2*zh/2.+10.*xh*zh**3)*np.sqrt(1./10.),
                                     (-15./2.*xh**4+45.*xh**2*zh**2+15./2.*yh**4.-45.*yh**2.*zh**2)*np.sqrt(1./180.),
                                     (105.*xh**3*zh-315.*xh*yh**2*zh)*np.sqrt(1./2520.),
-                                    (105.*xh**4-630.*xh**2*yh**2+105.*yh**4)*np.sqrt(1./20160.)])
+                                    (105.*xh**4-630.*xh**2*yh**2+105.*yh**4)*np.sqrt(1./20160.)],dtype=np.float64)
+            print("computed l=4")
         return Ylms
 
     # Gaussian random field routines
@@ -243,7 +266,7 @@ class PolyBin3D():
         # Define seed
         if seed!=None:
             np.random.seed(seed)
-        
+
         # Define input power spectrum on the k-space grid
         if len(Pk_input)==0:
             Pk_grid = self.Pk0_grid
@@ -256,8 +279,8 @@ class PolyBin3D():
                 Pk_grid += legendre(2)(self.muk_grid)*interp1d(Pk_input[0], Pk_input[2], bounds_error=False, fill_value=0.)(self.modk_grid)
             if len(Pk_input)>3:
                 Pk_grid += legendre(4)(self.muk_grid)*interp1d(Pk_input[0], Pk_input[3], bounds_error=False, fill_value=0.)(self.modk_grid)
-            
-        # Generate random Gaussian maps with input P(k)
+        
+        #Generate random Gaussian maps with input P(k)
         rand_fourier = (np.random.randn(*self.gridsize)+1.0j*np.random.randn(*self.gridsize))*np.sqrt(Pk_grid)
         rand_fourier[self.modk_grid==0] = 0.
 

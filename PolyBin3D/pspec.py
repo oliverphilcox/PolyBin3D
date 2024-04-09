@@ -5,6 +5,7 @@ import numpy as np
 import multiprocessing as mp
 import tqdm
 from scipy.special import legendre
+from icecream import ic
 
 class PSpec():
     """Power spectrum estimation class. This takes a set of k-bins as input and a base class. 
@@ -73,7 +74,13 @@ class PSpec():
         self.invPk0_grid = self.base.invPk0_grid[self.k_filt]
         if self.lmax>=2:
             self.muk_grid = self.base.muk_grid[self.k_filt]
-        
+
+        if self.base.sightline=='global' and self.lmax>0:
+            self.legendres = {}
+            self.legendres[0] = 1.
+            for ell in range(2,self.lmax+1,2):
+                self.legendres[ell] = legendre(ell)(self.muk_grid)
+                
         # Define spherical harmonics [for computing power spectrum multipoles]
         if self.base.sightline=='local' and self.lmax>0:
             print("Generating spherical harmonics")
@@ -82,7 +89,8 @@ class PSpec():
         
         # Define k filters
         k_filters = [(self.modk_grid>=self.k_bins[b])&(self.modk_grid<self.k_bins[b+1]) for b in range(self.Nk)]
-        self.all_k_filters = np.stack(k_filters)
+        self.all_k_filters = self.base.np.array(k_filters)
+        self.filt = lambda ki: self.all_k_filters[ki]
         
     def get_ks(self):
         """
@@ -127,24 +135,25 @@ class PSpec():
         
         # Compute monopole
         for ki in range(self.Nk):
-            filt = (self.modk_grid>=self.k_bins[ki])*(self.modk_grid<self.k_bins[ki+1]) # filter to k-bin
-            Pk_out[ki] = 0.5*np.sum(real_spec_squared[filt]) # integrate over k
+            Pk_out[ki] = 0.5*np.sum(real_spec_squared[self.filt(ki)]) # integrate over k
         
         # Compute higher multipoles
         for li in range(1,self.Nl):
             
             if self.base.sightline=='global':
                 # Compute L_ell(mu)*|S^-1 d(k)|^2
-                real_spec_squared_l = real_spec_squared*legendre(2*li)(self.muk_grid)
+                real_spec_squared_l = real_spec_squared*self.legendres[2*li]
 
                 # Integrate over k
                 for ki in range(self.Nk):
-                    filt = (self.modk_grid>=self.k_bins[ki])*(self.modk_grid<self.k_bins[ki+1])
-                    Pk_out[li*self.Nk+ki] = 0.5*np.sum(real_spec_squared_l[filt])
+                    Pk_out[li*self.Nk+ki] = 0.5*np.sum(real_spec_squared_l[self.filt(ki)])
             
             else:
                 # Compute Sum_m Y_lm(k)[S^-1 d](k)[S^-1 d]^*_lm(k)
-                lm_sum = np.sum([self.Ylm_fourier[(2-self.odd_l)*li][lm_ind]*self.base.to_fourier(Sinv_data_real*self.Ylm_real[(2-self.odd_l)*li][lm_ind])[self.k_filt].conj() for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li]))],axis=0)
+                lm_sum = 0.
+                for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li])):
+                    lm_sum += self.Ylm_fourier[(2-self.odd_l)*li][lm_ind]*self.base.to_fourier(Sinv_data_real*self.Ylm_real[(2-self.odd_l)*li][lm_ind])[self.k_filt].conj()
+                
                 if (self.odd_l and li%2==1):
                     spec_squared_l = np.real(1.0j*Sinv_data_fourier*lm_sum)
                 else:
@@ -152,8 +161,7 @@ class PSpec():
             
                 # Integrate over k
                 for ki in range(self.Nk):
-                    filt = (self.modk_grid>=self.k_bins[ki])*(self.modk_grid<self.k_bins[ki+1])
-                    Pk_out[li*self.Nk+ki] = 0.5*np.sum(spec_squared_l[filt])
+                    Pk_out[li*self.Nk+ki] = 0.5*np.sum(spec_squared_l[self.filt(ki)])
                     
         # Add FFT normalization
         Pk_out *= self.base.volume/self.base.gridsize.prod()**2
@@ -174,9 +182,6 @@ class PSpec():
         a_map_fourier = self.base.generate_data(seed=seed+int(1e7), output_type='fourier')
         if not self.const_mask:
             a_map_real = self.base.to_real(a_map_fourier)
-        
-        # Define k-space filtering
-        filt = lambda ki: (self.modk_grid>=self.k_bins[ki])*(self.modk_grid<self.k_bins[ki+1])
         
         # Define Q map code
         def compute_Q(weighting):
@@ -203,7 +208,7 @@ class PSpec():
             weighted_map_fourier = weighted_map_fourier[self.k_filt]
             
             # Define arrays
-            Q_maps = np.zeros((self.N_bins,self.base.gridsize.prod()),dtype='complex')
+            Q_maps = np.zeros((self.N_bins,self.base.gridsize.prod()),dtype=np.complex64)
 
             def _apply_weighting(input_map, real=False):
                 """Apply S^-1.W weighting to maps if weighting=='Ainv', else return map. Input is either a Fourier-space map or a real-space map."""
@@ -214,7 +219,7 @@ class PSpec():
                             return self.applySinv(input_map,input_type='real',output_type='fourier')*self.mask_mean
                         else:
                             # Cast to full Fourier-space
-                            k_map = np.zeros(self.base.gridsize,dtype='complex')
+                            k_map = np.zeros(self.base.gridsize,dtype=np.complex64)
                             k_map[self.k_filt] = input_map
                             return self.applySinv(k_map,input_type='fourier',output_type='fourier')*self.mask_mean                        
                     else:
@@ -223,7 +228,7 @@ class PSpec():
                             return self.applySinv(self.mask*input_map,input_type='real',output_type='fourier')
                         else:
                             # Cast to full Fourier-space
-                            k_map = np.zeros(self.base.gridsize,dtype='complex')
+                            k_map = np.zeros(self.base.gridsize,dtype=np.complex64)
                             k_map[self.k_filt] = input_map
                             return self.applySinv(self.mask*self.base.to_real(k_map),input_type='real',output_type='fourier')
                 else:
@@ -232,28 +237,29 @@ class PSpec():
                         return self.base.to_fourier(input_map)
                     else:
                         # Cast to full Fourier-space
-                        k_map = np.zeros(self.base.gridsize,dtype='complex')
+                        k_map = np.zeros(self.base.gridsize,dtype=np.complex64)
                         k_map[self.k_filt] = input_map
                         return k_map
-            
+
             # Compute Q derivative for the monopole, optionally adding S^-1.W weighting
             for ki in range(self.Nk):
-                Q_maps[ki,:] = _apply_weighting(weighted_map_fourier*filt(ki), real=False).ravel()
+                Q_maps[ki,:] = _apply_weighting(weighted_map_fourier*self.filt(ki), real=False).ravel()
 
             # Repeat for higher-order multipoles
             for li in range(1,self.Nl):
-
                 if self.base.sightline=='global':
                     # Compute L_ell(mu)* W U^-1 a
-                    leg_map = weighted_map_fourier*legendre(li*2)(self.muk_grid)
+                    leg_map = weighted_map_fourier*self.legendres[li*2]
                     
                     # Add to bins
                     for ki in range(self.Nk):
-                        Q_maps[li*self.Nk+ki,:] = _apply_weighting(leg_map*filt(ki), real=False).ravel()                           
+                        Q_maps[li*self.Nk+ki,:] = _apply_weighting(leg_map*self.filt(ki), real=False).ravel()                           
 
                 else:
                     # First part: (-1)^l Theta_b(k) Sum_m Y_lm(k)* [U^-1 a]_lm(k)
-                    leg_map = np.sum([self.Ylm_fourier[(2-self.odd_l)*li][lm_ind]*self.base.to_fourier(weighted_map_real*self.Ylm_real[(2-self.odd_l)*li][lm_ind])[self.k_filt] for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li]))],axis=0)
+                    leg_map = 0.
+                    for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li])):
+                        leg_map += self.Ylm_fourier[(2-self.odd_l)*li][lm_ind]*self.base.to_fourier(weighted_map_real*self.Ylm_real[(2-self.odd_l)*li][lm_ind])[self.k_filt]
                     
                     # Add phase for odd ell
                     if (self.odd_l and li%2==1):
@@ -264,18 +270,19 @@ class PSpec():
                         
                         if weighting=='Sinv':
                             # Add both parts at once, invoking symmetry of the averaged expression
-                            Q_maps[li*self.Nk+ki,:] += _apply_weighting(leg_map*filt(ki), real=False).ravel()
+                            Q_maps[li*self.Nk+ki,:] += _apply_weighting(leg_map*self.filt(ki), real=False).ravel()
                         
                         elif weighting=='Ainv':
                             # Add first part
-                            Q_maps[li*self.Nk+ki,:] += 0.5*_apply_weighting(leg_map*filt(ki), real=False).ravel()
+                            Q_maps[li*self.Nk+ki,:] += 0.5*_apply_weighting(leg_map*self.filt(ki), real=False).ravel()
 
                             # Second part: Sum_m Y_lm (x) Int_k e^ik.x Theta_b(k) Y_lm(k)*[U^-1 a](k)                        
-                            real_map = np.zeros(self.base.gridsize,dtype='complex')
+                            real_map = self.base.np.zeros(self.base.gridsize,dtype=self.base.np.complex64)
                             for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li])):
                                 # Cast to full Fourier-space map
-                                k_map = np.zeros(self.base.gridsize,dtype='complex')
-                                k_map[self.k_filt] = weighted_map_fourier*self.Ylm_fourier[(2-self.odd_l)*li][lm_ind]*filt(ki)
+                                k_map = np.zeros(self.base.gridsize,dtype=np.complex64)
+                                k_map[self.k_filt] = weighted_map_fourier*self.Ylm_fourier[(2-self.odd_l)*li][lm_ind]*self.filt(ki)
+                                
                                 real_map += self.base.to_real(k_map)*self.Ylm_real[(2-self.odd_l)*li][lm_ind]
                             
                             # Add second part, using the real-space map [which fills all Fourier modes, not just those in [k_min, k_max]]
@@ -401,6 +408,7 @@ class PSpec():
 
         # First remove the pixel window function
         data_fourier = self.base.to_fourier(data)
+
         if self.base.pixel_window!='none':
             data_fourier /= self.base.pixel_window_grid
         
@@ -422,31 +430,31 @@ class PSpec():
         
         # Compute monopole
         for ki in range(self.Nk):
-            filt = (self.modk_grid>=self.k_bins[ki])*(self.modk_grid<self.k_bins[ki+1]) # filter to k-bin
-            Pk_out[ki] = 0.5*np.sum(real_spec_squared[filt]) # integrate over k
+            Pk_out[ki] = 0.5*np.sum(real_spec_squared[self.filt(ki)]) # integrate over k
             
         # Compute higher multipoles
         for li in range(1,self.Nl_even):
             
             if self.base.sightline=='global':
                 # Compute L_ell(mu)*|S^-1 d(k)|^2
-                real_spec_squared_l = real_spec_squared*legendre(li*2)(self.muk_grid)
+                real_spec_squared_l = real_spec_squared*self.legendres[li*2]
 
                 # Integrate over k
                 for ki in range(self.Nk):
-                    filt = (self.modk_grid>=self.k_bins[ki])*(self.modk_grid<self.k_bins[ki+1])
-                    Pk_out[li*self.Nk+ki] = 0.5*np.sum(real_spec_squared_l[filt])
+                    Pk_out[li*self.Nk+ki] = 0.5*np.sum(real_spec_squared_l[self.filt(ki)])
             
             else:
                 # Compute Sum_m Y_lm(k)[S^-1 d]^*(k)[S^-1 d]_lm(k)
-                lm_sum = np.sum([self.Ylm_fourier[2*li][lm_ind]*self.base.to_fourier(data_real*self.Ylm_real[2*li][lm_ind])[self.k_filt] for lm_ind in range(len(self.Ylm_real[2*li]))],axis=0)
-                spec_squared_l = np.real(data_fourier*lm_sum)
-            
+                lm_sum = 0.
+                for lm_ind in range(len(self.Ylm_real[2*li])):
+                    lm_sum += self.Ylm_fourier[2*li][lm_ind]*self.base.to_fourier(data_real*self.Ylm_real[2*li][lm_ind])[self.k_filt]
+                
+                spec_squared_l = self.base.np.real(data_fourier*lm_sum)
+
                 # Integrate over k
                 for ki in range(self.Nk):
-                    filt = (self.modk_grid>=self.k_bins[ki])*(self.modk_grid<self.k_bins[ki+1])
-                    Pk_out[li*self.Nk+ki] = 0.5*np.sum(spec_squared_l[filt])
-
+                     Pk_out[li*self.Nk+ki] = 0.5*np.sum(spec_squared_l[self.filt(ki)])
+        
         # Add normalization
         Pk_out *= self.base.volume/self.base.gridsize.prod()**2
         
@@ -474,12 +482,12 @@ class PSpec():
                 if la==0:
                     lega = 1
                 else:
-                    lega = legendre(2*la)(self.muk_grid)
+                    lega = self.legendres[2*la]
                 for lb in range(self.Nl_even):
                     if lb==0:
                         legab = lega
                     else:
-                        legab = lega*legendre(2*lb)(self.muk_grid)
+                        legab = lega*self.legendres[2*lb]
                     # Assemble fisher matrix
                     fish_diag = 0.5*np.sum(sq_inv_Pk*legab*self.all_k_filters,axis=1)
                     
@@ -586,7 +594,7 @@ class PSpec():
                 weighted_map_real = self.base.to_real(weighted_map_fourier)
             
             # Define arrays
-            Q_maps = np.zeros((self.N_bins,self.base.gridsize.prod()),dtype='complex')
+            Q_maps = np.zeros((self.N_bins,self.base.gridsize.prod()),dtype=np.complex64)
             
             def _apply_weighting(input_map, real=False):
                 """Apply W^T S^-T weighting to maps. Input is either a Fourier-space map or a real-space map."""
@@ -611,7 +619,7 @@ class PSpec():
 
                 if self.base.sightline=='global':
                     # Compute L_ell(mu)* S^-1 W a
-                    leg_map = weighted_map_fourier*legendre(li*2)(self.muk_grid)
+                    leg_map = weighted_map_fourier*self.legendres[li*2]
 
                     # Add to bins
                     for ki in range(self.Nk):
@@ -632,7 +640,7 @@ class PSpec():
                         Q_maps[li*self.Nk+ki,:] += 0.5*_apply_weighting(leg_map*filt(ki), real=False).ravel()
 
                         # Second part: Sum_m Y_lm (x) Int_k e^ik.x Theta_b(k) Y_lm(k)*[S^-1 W a](k)                        
-                        real_map = np.zeros(self.base.gridsize,dtype='complex')
+                        real_map = np.zeros(self.base.gridsize,dtype=np.complex64)
                         for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li])):
                             # Cast to full Fourier-space map
                             k_map = weighted_map_fourier*Ylm_fourier[(2-self.odd_l)*li][lm_ind]*filt(ki)
@@ -663,7 +671,7 @@ class PSpec():
                 weighted_map_real = self.base.to_real(weighted_map_fourier)
             
             # Define arrays
-            Q_maps = np.zeros((N_bins_th,self.base.gridsize.prod()),dtype='complex')
+            Q_maps = np.zeros((N_bins_th,self.base.gridsize.prod()),dtype=np.complex64)
 
             # Compute Q derivative for the monopole, optionally adding S^-1.W weighting
             for ki in range(Nk_th):
@@ -674,7 +682,7 @@ class PSpec():
 
                 if self.base.sightline=='global':
                     # Compute L_ell(mu)* A-1 a
-                    leg_map = weighted_map_fourier*legendre(li*2)(self.muk_grid)
+                    leg_map = weighted_map_fourier*self.legendre[li*2]
 
                     # Add to bins
                     for ki in range(Nk_th):
