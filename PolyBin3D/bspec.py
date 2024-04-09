@@ -274,7 +274,7 @@ class BSpec():
                 # Compute spherical harmonics for this order
                 g_bl_maps.append([self.base.to_real(self.bin_filt(b)*leg_map).conj() for b in range(self.Nk_squeeze)])
 
-        return np.array(g_bl_maps)
+        return g_bl_maps
 
     def load_sims(self, load_sim, N_sims, verb=False, input_type='real', preload=True):
         """
@@ -301,7 +301,7 @@ class BSpec():
                 this_sim = load_sim(ii)
 
                 # Process simulation
-                self.g_bl_maps.append(self._process_sim(this_sim, input_type=input_type))
+                self.g_bl_maps.append(np.array(self._process_sim(this_sim, input_type=input_type)))
 
         else:
             self.preload = False
@@ -593,7 +593,7 @@ class BSpec():
             if weighting=='Ainv':
                 for i in range(len(Q_maps)):
                     if self.const_mask:
-                        Q_maps[i] += phase*(self.applySinv(k_maps[i],input_type='fourier',output_type='fourier')*self.mask_mean).ravel()         
+                        Q_maps[i] += phase*(self.applySinv(k_maps[i],input_type='fourier',output_type='fourier')*self.mask_mean).ravel()
                     else:
                         Q_maps[i] += phase*(self.applySinv(self.mask*self.base.to_real(k_maps[i]),input_type='real',output_type='fourier')).ravel()
             else:
