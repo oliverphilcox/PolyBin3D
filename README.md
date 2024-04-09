@@ -1,7 +1,9 @@
 # PolyBin3D
 PolyBin3D is a Python code that estimates the binned power spectrum and bispectrum for 3D fields such as the distributions of matter and galaxies, using the algorithms of [Philcox 2020](https://arxiv.org/abs/2012.09389), [Philcox 2021](https://arxiv.org/abs/2107.06287), [Ivanov et al. 2023](https://arxiv.org/abs/2302.04414) and Philcox et al. (in prep). It is a sister code to [PolyBin](https://github.com/oliverphilcox/PolyBin), which computes the polyspectra of data on the two-sphere and is a modern reimplementation of the former [Spectra-Without-Windows](https://github.com/oliverphilcox/Spectra-Without-Windows) code. 
 
-For each statistic, two estimators are available: the standard (ideal) estimators, which do not take into account the mask, and window-deconvolved estimators. In the second case, we require computation of a Fisher matrix; this depends on binning and the mask, but does not need to be recomputed for each new simulation. 
+For each statistic, two estimators are available: the standard (ideal) estimators, which do not take into account the mask, and window-deconvolved estimators. In the second case, we require computation of a Fisher matrix; this depends on binning and the mask, but does not need to be recomputed for each new simulation.
+
+The code supports GPU acceleration using JAX, which can be enabled using the `backend` argument in the `base` class, as demonstrated below.
 
 PolyBin contains the following modules:
 - `pspec`: Binned power spectra
@@ -18,6 +20,8 @@ base = pb.PolyBin3D(boxsize, # dimensions of box
                     gridsize, # dimensions of Fourier-space grid, 
                     boxcenter=[0,0,0], # center of simulation box
                     pixel_window='tsc', # pixel window function
+                    backend='fftw', # backend for performing FFTs ('fftw' for cpu, 'jax' for gpu)
+                    nthreads=4, # number of CPUs for performing FFTs (only applies to 'fftw' backend)
                     sightline='global') # redshift-space axis                    
 
 # Load power spectrum class
@@ -67,12 +71,14 @@ Further details are described in the tutorials, which describe
 
 ## Authors
 - [Oliver Philcox](mailto:ohep2@cantab.ac.uk) (Columbia / Simons Foundation)
+- [Thomas Flöss](mailto:tsfloss@gmail.com) (University of Groningen)
 
 ## Dependencies
 - Python 2/3
 - numpy, scipy
 - fftw [for FFTs]
 - Nbodykit [not required, but useful for testing]
+- JAX (for GPU acceleration, see [here](https://jax.readthedocs.io/en/latest/installation.html) for installation instructions.)
 
 ## References
 **Code references:**
