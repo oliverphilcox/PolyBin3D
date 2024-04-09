@@ -223,14 +223,12 @@ class PolyBin3D():
             Ylms[1] = np.asarray([yh,
                                     zh,
                                     xh],dtype=np.float64)
-            print("computed l=1")
         if lmax>=2:
             Ylms[2] = np.asarray([6.*xh*yh*np.sqrt(1./12.),
                                     3.*yh*zh*np.sqrt(1./3.),
                                     (zh**2-xh**2/2.-yh**2/2.),
                                     3.*xh*zh*np.sqrt(1./3.),
                                     (3*xh**2-3*yh**2)*np.sqrt(1./12.)],dtype=np.float64)
-            print("computed l=2")
         if (odd_l and lmax>=3):
             Ylms[3] = np.asarray([(45.*xh**2*yh-15.*yh**3.)*np.sqrt(1./360.),
                                     (30.*xh*yh*zh)*np.sqrt(1./60.),
@@ -239,7 +237,6 @@ class PolyBin3D():
                                     (-1.5*xh**3-1.5*xh*yh**2+6.*xh*zh**2)*np.sqrt(1./6.),
                                     (15.*xh**2*zh-15.*yh**2*zh)*np.sqrt(1./60.),
                                     (15.*xh**3-45.*xh*yh**2)*np.sqrt(1./360.)],dtype=np.float64)
-            print("computed l=3")
         if lmax>=4:
             Ylms[4] = np.asarray([(420.*xh**3*yh-420.*xh*yh**3)*np.sqrt(1./20160.),
                                     (315.*xh**2*yh*zh-105.*yh**3*zh)*np.sqrt(1./2520.),
@@ -250,7 +247,6 @@ class PolyBin3D():
                                     (-15./2.*xh**4+45.*xh**2*zh**2+15./2.*yh**4.-45.*yh**2.*zh**2)*np.sqrt(1./180.),
                                     (105.*xh**3*zh-315.*xh*yh**2*zh)*np.sqrt(1./2520.),
                                     (105.*xh**4-630.*xh**2*yh**2+105.*yh**4)*np.sqrt(1./20160.)],dtype=np.float64)
-            print("computed l=4")
         return Ylms
 
     # Gaussian random field routines
