@@ -88,7 +88,7 @@ Further details are described in the tutorials, which describe
 4. Ivanov, M. M., Philcox, O. H. E., et al. "Cosmology with the Galaxy Bispectrum Multipoles: Optimal Estimation and Application to BOSS Data" (2023) ([arXiv](https://arxiv.org/abs/2302.04414))
 
 **Some works using data from PolyBin3D (or its predecessor)**
-- Philcox & Ivanov (2021, [Phys. Rev. D](https://doi.org/10.1103/PhysRevD.105.043517), [arXiv](https://arxiv.org/abs/2112.04515)): Combined constraints on LambdaCDM from the BOSS power spectrum and bispectrum.
+- Philcox & Ivanov (2021, [arXiv](https://arxiv.org/abs/2112.04515)): Combined constraints on LambdaCDM from the BOSS power spectrum and bispectrum.
 - Cabass et al. (2022, [arXiv](https://arxiv.org/abs/2201.07238)): Constraints on single-field inflation from the BOSS power spectrum and bispectrum.
 - Cabass et al. (2022, [arXiv](https://arxiv.org/abs/2204.01781)): Constraints on multi-field inflation from the BOSS power spectrum and bispectrum.
 - Nunes et al. (2022, [arXiv](https://arxiv.org/abs/2203.08093)): Constraints on dark-sector interactions from the BOSS galaxy power spectrum.
