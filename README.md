@@ -1,5 +1,5 @@
 # PolyBin3D
-PolyBin3D is a Python code that estimates the binned power spectrum and bispectrum for 3D fields such as the distributions of matter and galaxies, using the algorithms of [Philcox 2020](https://arxiv.org/abs/2012.09389), [Philcox 2021](https://arxiv.org/abs/2107.06287), [Ivanov et al. 2023](https://arxiv.org/abs/2302.04414) and Philcox et al. (in prep). It is a sister code to [PolyBin](https://github.com/oliverphilcox/PolyBin), which computes the polyspectra of data on the two-sphere and is a modern reimplementation of the former [Spectra-Without-Windows](https://github.com/oliverphilcox/Spectra-Without-Windows) code. 
+PolyBin3D is a Python code that estimates the binned power spectrum and bispectrum for 3D fields such as the distributions of matter and galaxies, using the algorithms of [Philcox 2020](https://arxiv.org/abs/2012.09389), [Philcox 2021](https://arxiv.org/abs/2107.06287), [Ivanov et al. 2023](https://arxiv.org/abs/2302.04414) and [Philcox & Floss 2024](https://arxiv.org/abs/2404.07249). It is a sister code to [PolyBin](https://github.com/oliverphilcox/PolyBin), which computes the polyspectra of data on the two-sphere and is a modern reimplementation of the former [Spectra-Without-Windows](https://github.com/oliverphilcox/Spectra-Without-Windows) code. 
 
 For each statistic, two estimators are available: the standard (ideal) estimators, which do not take into account the mask, and window-deconvolved estimators. In the second case, we require computation of a Fisher matrix; this depends on binning and the mask, but does not need to be recomputed for each new simulation.
 
@@ -82,7 +82,7 @@ Further details are described in the tutorials, which describe
 
 ## References
 **Code references:**
-1. **Philcox, O. H. E. & Flöss, T. (in prep): "PolyBin3D: A Suite of Optimal and Efficient Power Spectrum and Bispectrum Estimators for Large-Scale Structure"**
+1. **Philcox, O. H. E. & Flöss, T.: "PolyBin3D: A Suite of Optimal and Efficient Power Spectrum and Bispectrum Estimators for Large-Scale Structure", (2024) ([arXiv](https://arxiv.org/abs/2404.07249))**
 2. Philcox, O. H. E., "Cosmology Without Window Functions: Quadratic Estimators for the Galaxy Power Spectrum", (2020) ([arXiv](https://arxiv.org/abs/2012.09389))
 3. Philcox, O. H. E., "Cosmology Without Window Functions: Cubic Estimators for the Galaxy Bispectrum", (2021) ([arXiv](https://arxiv.org/abs/2107.06287))
 4. Ivanov, M. M., Philcox, O. H. E., et al. "Cosmology with the Galaxy Bispectrum Multipoles: Optimal Estimation and Application to BOSS Data" (2023) ([arXiv](https://arxiv.org/abs/2302.04414))
