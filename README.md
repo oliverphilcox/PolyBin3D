@@ -20,7 +20,7 @@ base = pb.PolyBin3D(boxsize, # dimensions of box
                     gridsize, # dimensions of Fourier-space grid, 
                     boxcenter=[0,0,0], # center of simulation box
                     pixel_window='tsc', # pixel window function
-                    backend='fftw', # backend for performing FFTs ('fftw' for cpu, 'jax' for gpu)
+                    backend='fftw', # backend for performing FFTs ('fftw' or 'mkl' for cpu, 'jax' for gpu)
                     nthreads=4, # number of CPUs for performing FFTs (only applies to 'fftw' backend)
                     sightline='global') # redshift-space axis                    
 
@@ -76,9 +76,9 @@ Further details are described in the tutorials, which describe
 ## Dependencies
 - Python 2/3
 - numpy, scipy
-- fftw [for FFTs]
+- fftw *or* mkl_fft [for FFTs]
 - Nbodykit [not required, but useful for testing]
-- JAX (for GPU acceleration, see [here](https://jax.readthedocs.io/en/latest/installation.html) for installation instructions.)
+- JAX (optional, for GPU acceleration, see [here](https://jax.readthedocs.io/en/latest/installation.html) for installation instructions.)
 
 ## References
 **Code references:**

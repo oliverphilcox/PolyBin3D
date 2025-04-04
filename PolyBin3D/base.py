@@ -7,6 +7,7 @@ import tqdm
 from scipy.interpolate import interp1d
 from scipy.special import legendre
 import time
+from .cython import utils
 
 class PolyBin3D():
     """Base class for PolyBin3D.
@@ -85,7 +86,7 @@ class PolyBin3D():
         self.modk_grid = np.sqrt(self.k_grids[0]**2+self.k_grids[1]**2+self.k_grids[2]**2)
         
         print("# Fourier-space grid: [%d, %d, %d]"%(self.gridsize[0],self.gridsize[1],self.gridsize[2])) 
-        print("# Fundamental frequency: [%.3f, %.3f, %.3f] h/Mpc"%(self.kF[0],self.kF[1],self.kF[2]))
+        print("# Fundamental frequency: [%.4f, %.4f, %.4f] h/Mpc"%(self.kF[0],self.kF[1],self.kF[2]))
         print("# Nyquist frequency: [%.3f, %.3f, %.3f] h/Mpc"%(self.kNy[0],self.kNy[1],self.kNy[2]))
 
         # Account for pixel window if necessary
@@ -137,18 +138,32 @@ class PolyBin3D():
             self.fftw_in  = pyfftw.empty_aligned(self.gridsize,dtype='complex128')
             self.fftw_out = pyfftw.empty_aligned(self.gridsize,dtype='complex128')
 
-            # plan FFTW
-            self.fftw_plan = pyfftw.FFTW(self.fftw_in, self.fftw_out, axes=(0,1,2),flags=('FFTW_ESTIMATE',),direction='FFTW_FORWARD', threads=self.nthreads)
-            self.ifftw_plan = pyfftw.FFTW(self.fftw_in, self.fftw_out, axes=(0,1,2),flags=('FFTW_ESTIMATE',),direction='FFTW_BACKWARD', threads=self.nthreads)
+            # Preallocate memory-aligned arrays.
+            self.fftw_plan = pyfftw.FFTW(self.fftw_in, self.fftw_out, axes=(0, 1, 2),direction='FFTW_FORWARD',flags=('FFTW_MEASURE',),threads=self.nthreads)
+            self.ifftw_plan = pyfftw.FFTW(self.fftw_in, self.fftw_out, axes=(0, 1, 2),direction='FFTW_BACKWARD',flags=('FFTW_MEASURE',),threads=self.nthreads)
+
+            # Run a warm-up transform to gain wisdom
+            self.fftw_in[:] = np.ones(self.gridsize,dtype='complex128')
+            self.fftw_plan()
+            self.ifftw_plan()
+            
             self.np = np
-            print('# Using fftw backend')
+            print('# Using FFTW backend')
+        
+        elif self.backend=='mkl':
+            import mkl_fft
+            self.mkl_fft = mkl_fft
+            
+            self.np = np
+            print('# Using MKL backend')
+            
         elif self.backend=='jax':
             import jax
             import jax.numpy as jnp
             jax.config.update("jax_enable_x64", False)
             self.np = jnp
             self.jax = jax
-            print('# Using jax backend')
+            print('# Using JAX backend')
             
         else:
             raise Exception("Only 'fftw' and 'jax' backends are currently implemented!")
@@ -157,7 +172,7 @@ class PolyBin3D():
         self.Pk0_grid = interp1d(self.Pfid[0], self.Pfid[1], bounds_error=False)(self.modk_grid)
         
         # Invert Pk
-        self.invPk0_grid = np.zeros(self.gridsize)
+        self.invPk0_grid = np.zeros(self.gridsize, dtype=np.float64)
         good_filter = (self.Pk0_grid!=0)&np.isfinite(self.Pk0_grid)
         self.invPk0_grid[good_filter] = 1./self.Pk0_grid[good_filter] 
         self.Pk0_grid[~np.isfinite(self.Pk0_grid)] = 0.
@@ -170,14 +185,23 @@ class PolyBin3D():
     def to_fourier(self, _input_rmap):
         """Transform from real- to Fourier-space."""
         self.n_FFTs_forward += 1
+        assert type(_input_rmap[0,0,0])==np.float64
 
         if self.backend=='fftw':
+            
             # Load-in grid
-            self.fftw_in[:] = _input_rmap
+            np.copyto(self.fftw_in, _input_rmap)
             # Perform FFT
             self.fftw_plan(self.fftw_in,self.fftw_out)
             # Return output
             return self.fftw_out.copy()
+        
+        elif self.backend=='mkl':
+             # Ensure the data is contiguous to avoid unnecessary overhead.
+            data_contig = np.ascontiguousarray(_input_rmap)
+            
+            # Perform the FFT on the specified axes.
+            return self.mkl_fft.fftn(data_contig, axes=(0,1,2), overwrite_x=False)        
 
         elif self.backend=='jax':
             arr = self.np.fft.fftn(_input_rmap,axes=(-3,-2,-1))
@@ -186,18 +210,25 @@ class PolyBin3D():
     def to_real(self, _input_kmap):
         """Transform from Fourier- to real-space."""
         self.n_FFTs_reverse += 1
+        assert type(_input_kmap[0,0,0])==np.complex128
 
         if self.backend=='fftw':
             # Load-in grid
-            self.fftw_in[:] = _input_kmap
+            np.copyto(self.fftw_in, _input_kmap)
             # Perform FFT
             self.ifftw_plan(self.fftw_in,self.fftw_out)
             # Return output
-            return self.fftw_out.copy()
+            return np.asarray(self.fftw_out.copy().real, order='C')
+        
+        elif self.backend=='mkl':
+            # Ensure the data is contiguous
+            data_contig = np.ascontiguousarray(_input_kmap)
+            # Perform FFT
+            return np.asarray(self.mkl_fft.ifftn(data_contig, axes=(0,1,2), overwrite_x=False).real, order='C')     
 
         elif self.backend=='jax':
             arr = self.np.fft.ifftn(_input_kmap,axes=(-3,-2,-1))
-            return arr
+            return self.np.asarray(arr.real, order='C')
 
     # Spherical harmonic functions
     def _safe_divide(self, x, y):
@@ -285,13 +316,13 @@ class PolyBin3D():
             rand_fourier *= self.pixel_window_grid
         
         # Force map to be real and normalize
-        rand_real = self.to_real(rand_fourier).real
+        rand_real = self.to_real(rand_fourier)
         rand_real *= self.gridsize.prod()/np.sqrt(self.volume)
 
         if output_type=='real': return rand_real
         else: return self.to_fourier(rand_real)
         
-    def applyAinv(self, input_data, input_type='real', output_type='real'):
+    def applyAinv(self, input_data, invPk0_grid=None, input_type='real', output_type='real'):
         """Apply the exact inverse weighting A^{-1} to a map. This assumes a diagonal-in-ell C_l^{XY} weighting, as produced by generate_data.
         
         Note that the code has two input and output options: "fourier" or "real", to avoid unnecessary transforms.
@@ -300,12 +331,15 @@ class PolyBin3D():
         assert input_type in ['fourier','real'], "Valid input types are 'fourier' and 'real' only!"
         assert output_type in ['fourier','real'], "Valid output types are 'fourier' and 'real' only!"
 
+        if type(invPk0_grid)==type(None): 
+            invPk0_grid = self.invPk0_grid
+
         # Transform to harmonic space, if necessary
         if input_type=='real': input_fourier = self.to_fourier(input_data)
         else: input_fourier = input_data.copy()
-            
+        
         # Divide by covariance
-        Sinv_fourier = input_fourier*self.invPk0_grid
+        Sinv_fourier = utils.prod_map(input_fourier, invPk0_grid, self.nthreads)
         
         # Optionally divide by pixel window
         if self.pixel_window!='none':
