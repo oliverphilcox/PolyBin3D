@@ -1,12 +1,7 @@
 ### Code for ideal and unwindowed binned polyspectrum estimation in 3D. Author: Oliver Philcox (2023)
 ## This module contains the basic code
 
-import numpy as np, os
-import multiprocessing as mp
-import tqdm
-from scipy.interpolate import interp1d
-from scipy.special import legendre
-import time
+import numpy as np, os, time, scipy
 from .cython import utils
 
 class PolyBin3D():
@@ -15,20 +10,22 @@ class PolyBin3D():
     Inputs:
     - boxsize: 3D box-size (with 1 or 3 components)
     - gridsize: Number of Fourier modes per dimension (with 1 or 3 components)
-    - Pk: Fiducial power spectrum monopole (including noise), in ordering {k, P_0(k)}, optional. This is used for the ideal estimators and for creating synthetic realizations for the optimal estimators. If unset, unit power will be assumed.
-    - boxcenter: Center of the 3D box (with 1 or 3 components)
-    - pixel_window: Which voxel window function to use. See self.pixel_windows for a list of options (including "none").
-    - backend: Which backend to use to compute FFTs. Options: "fftw" [requires pyfftw].   
-    - nthreads: How many CPUs to use for the FFT calculations. Default: 1.   
-    - sightline: Whether to assume local or global line-of-sight. Options: "local" [relative to each pair], "global" [relative to z-axis].   
+    - Pk (optional): Fiducial power spectrum monopole (including noise), in ordering {k, P_0(k)}. This is used for the ideal estimators and for creating synthetic realizations for the optimal estimators. If unset, unit power will be assumed.
+    - boxcenter (optional): Center of the 3D box (with 1 or 3 components). Default: [0,0,0]
+    - pixel_window (optional): Which voxel window function to use. See self.pixel_windows for a list of options (including "none"). Default: "none"
+    - backend (optional): Which backend to use to compute FFTs. Options: "mkl" [requires mkl_fft].   
+    - nthreads (optional): How many CPUs to use for the CPU calculations. Default: maximum available.
+    - sightline (optional): Whether to assume local or global line-of-sight. Options: "local" [relative to each pair], "global" [relative to z-axis]. Default: "global"
     """
-    def __init__(self, boxsize, gridsize, Pk=None, boxcenter=[0,0,0], pixel_window='none', backend='fftw', nthreads=1, sightline='global'):
+    def __init__(self, boxsize, gridsize, Pk=None, boxcenter=[0,0,0], pixel_window='none', backend='mkl', nthreads=None, sightline='global'):
         
         # Load attributes
         self.backend = backend
         self.nthreads = nthreads
         self.sightline = sightline
         self.pixel_window = pixel_window
+        if self.nthreads is None:
+            self.nthreads = os.cpu_count()
         
         # Check and load boxsize
         if type(boxsize)==float:
@@ -169,7 +166,7 @@ class PolyBin3D():
             raise Exception("Only 'fftw' and 'jax' backends are currently implemented!")
         
         # Apply Pk to grid
-        self.Pk0_grid = interp1d(self.Pfid[0], self.Pfid[1], bounds_error=False)(self.modk_grid)
+        self.Pk0_grid = scipy.interpolate.interp1d(self.Pfid[0], self.Pfid[1], bounds_error=False)(self.modk_grid)
         
         # Invert Pk
         self.invPk0_grid = np.zeros(self.gridsize, dtype=np.float64)
@@ -301,11 +298,11 @@ class PolyBin3D():
             assert len(np.asarray(Pk_input).shape)==2, "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
             assert len(Pk_input) in [2,3,4], "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
             
-            Pk_grid = interp1d(Pk_input[0], Pk_input[1], bounds_error=False, fill_value=0.)(self.modk_grid)
+            Pk_grid = scipy.interpolate.interp1d(Pk_input[0], Pk_input[1], bounds_error=False, fill_value=0.)(self.modk_grid)
             if len(Pk_input)>2:
-                Pk_grid += legendre(2)(self.muk_grid)*interp1d(Pk_input[0], Pk_input[2], bounds_error=False, fill_value=0.)(self.modk_grid)
+                Pk_grid += scipy.special.legendre(2)(self.muk_grid)*scipy.interpolate.interp1d(Pk_input[0], Pk_input[2], bounds_error=False, fill_value=0.)(self.modk_grid)
             if len(Pk_input)>3:
-                Pk_grid += legendre(4)(self.muk_grid)*interp1d(Pk_input[0], Pk_input[3], bounds_error=False, fill_value=0.)(self.modk_grid)
+                Pk_grid += scipy.special.legendre(4)(self.muk_grid)*scipy.interpolate.interp1d(Pk_input[0], Pk_input[3], bounds_error=False, fill_value=0.)(self.modk_grid)
         
         # Generate random Gaussian maps with input P(k)
         rand_fourier = (np.random.randn(*self.gridsize)+1.0j*np.random.randn(*self.gridsize))*np.sqrt(Pk_grid)

@@ -10,21 +10,20 @@ from icecream import ic
 from .cython import utils
 
 class PSpec():
-    """Power spectrum estimation class. This takes a set of k-bins as input and a base class. 
-    We can also feed in a function that applies the S^-1 operator. 
+    """Class containing the power spectrum estimators.
     
     Inputs:
-    - base: PolyBin class
-    - k_bins: array of bin edges
+    - base: PolyBin base class
+    - k_bins: array of k bin edges (e.g., [0.01, 0.02, 0.03] would give two bins: [0.01,0.02] and [0.02,0.03]).
     - lmax: (optional) maximum Legendre multipole, default: 2.
-    - mask: (optional) 3D mask to deconvolve.
-    - applySinv: (optional) function which returns S^-1 ( ~ [Mask*2PCF + 1]^-1 ) applied to a given input data field. This is only needed for unwindowed estimators.
+    - mask: (optional) 3D mask, specifying the background density n(x,y,z).
+    - applySinv: (optional) function which weights the data field. This is only required for unwindowed estimators.
     - odd_l: (optional) whether to include odd ell-modes in the estimator, default: False. Only relevant for local lines-of-sight.
     - add_GIC: (optional) whether to include the global integral constraint, default: False
     - add_RIC: (optional) whether to include the radial integral constraint, default: False
-    - mask_IC: (optional) unweighted 3D mask used to model integral constraints
+    - mask_IC: (optional) unweighted 3D mask used to model integral constraints.
     - radial_bins_RIC: (optional) radial bins used to define n(z) [used for the RIC correction].
-    - mask_shot: (optional) doubly weighted 3D mask used for defining shot-noise.
+    - mask_shot: (optional) doubly weighted 3D field used to define shot-noise.
     """
     def __init__(self, base, k_bins, lmax=2, mask=None, applySinv=None, odd_l=False, add_GIC=False, mask_IC=None, add_RIC=False, radial_bins_RIC=[], mask_shot=None):
         # Read in attributes
@@ -97,24 +96,13 @@ class PSpec():
             self.base.modr_grid = np.sqrt(self.base.r_grids[0]**2.+self.base.r_grids[1]**2.+self.base.r_grids[2]**2.)
             self.radial_bins_RIC = radial_bins_RIC
             
-        # Create local copies of k arrays, filtered to desired k-range
-        self.k_filt = (self.base.modk_grid>=self.k_bins[0])&(self.base.modk_grid<self.k_bins[-1])
-        self.modk_grid = self.base.modk_grid[self.k_filt]
-        self.invPk0_grid = self.base.invPk0_grid[self.k_filt]        
-        self.legendres = lambda l: legendre(l)(self.base.muk_grid[self.k_filt])
-        print("drop some of these?! also probably restrict to R2C FFTs and real data?")
-                
         # Define spherical harmonics [for computing power spectrum multipoles]
         if self.base.sightline=='local' and self.lmax>0:
             print("Generating spherical harmonics")
             self.Ylm_real = utils.compute_real_harmonics(np.asarray(self.base.r_grids), self.lmax, self.odd_l, self.base.nthreads)
             self.Ylm_fourier = utils.compute_real_harmonics(np.asarray(self.base.k_grids), self.lmax, self.odd_l, self.base.nthreads)
         
-        print("remove ideal numerator?!")
         print('check we use all the utils functions')
-        
-        # Define k filters
-        self.filt = lambda ki: (self.modk_grid>=self.k_bins[ki])&(self.modk_grid<self.k_bins[ki+1])
         
     def get_ks(self):
         """
@@ -129,63 +117,13 @@ class PSpec():
         """
         Compute the numerator of the unwindowed power spectrum estimator, using the custom weighting function S^-1.
         """
-        
+        assert data.shape == self.mask.shape, "Data must have same shape as the mask!"
+
         if self.applySinv==None:
             raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
         
-        assert data.shape == self.mask.shape, "Data must have same shape as the mask!"
-
-        # First remove the pixel window function, if present
-        if self.base.pixel_window!='none':
-            data_fourier = self.base.to_fourier(data)
-            data_fourier /= self.base.pixel_window_grid
-        
-            # Apply S^-1 to data and transform to Fourier space
-            Sinv_data_fourier = self.applySinv(data_fourier, input_type='fourier', output_type='fourier')
-        else:
-            # Apply S^-1 to data and transform to Fourier space
-            Sinv_data_fourier = self.applySinv(data, input_type='real', output_type='fourier')
-        
-        # Store the real-space map if necessary
-        if (self.base.sightline=='local' and self.lmax>0):
-            Sinv_data_real = self.base.to_real(Sinv_data_fourier)
-        
-        # Define output array
-        Pk_out = np.zeros(self.N_bins)
-        
-        # Compute monopole
-        for ki in range(self.Nk):
-            Pk_out[ki] = 0.5*utils.bin_integrate(Sinv_data_fourier, self.base.modk_grid, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
-        
-        # Compute higher multipoles
-        for li in range(1,self.Nl):
-            
-            if self.base.sightline=='global':
-                
-                # Compute L_ell(mu)*|S^-1 d(k)|^2, integrated over k
-                for ki in range(self.Nk):
-                    Pk_out[li*self.Nk+ki] = 0.5*utils.bin_integrate_l(Sinv_data_fourier, self.base.modk_grid, self.base.muk_grid, 2*li, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
-            
-            else:
-                
-                # Compute Sum_m Y_lm(k)[S^-1 d](k)[S^-1 d]^*_lm(k)
-                lm_sum = np.zeros(self.base.gridsize, dtype=np.complex128)
-                for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li])):
-                    map_lm = utils.prod_map_real(Sinv_data_real,self.Ylm_real[(2-self.odd_l)*li][lm_ind],self.base.nthreads)
-                    utils.prod_map_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[(2-self.odd_l)*li][lm_ind], lm_sum, self.base.nthreads)
-                
-                # Ensure output is real
-                if (self.odd_l and li%2==1):
-                    lm_sum *= -1.0j
-                
-                # Apply binning
-                for ki in range(self.Nk):
-                    Pk_out[li*self.Nk+ki] = 0.5*utils.bin_integrate_cross(Sinv_data_fourier, lm_sum, self.base.modk_grid, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
-                    
-        # Add FFT normalization
-        Pk_out *= self.base.volume/self.base.gridsize.prod()**2
-        
-        return Pk_out
+        # Send to wrapper
+        return self._compute_pk_numerator(data, filtering='Sinv')
     
     def compute_fisher_contribution(self, seed, applySinv_transpose=None, verb=False):
         """This computes the contribution to the Fisher matrix from a single GRF simulation, created internally.
@@ -197,7 +135,7 @@ class PSpec():
 
         if type(applySinv_transpose)!=type(lambda x: x):
             applySinv_transpose = self.applySinv
-            print("## Caution: assuming S^-1 is symmetric!")
+            print("## Caution: assuming S^-1 is Hermitian!")
 
         # Run main algorithm
         return self._compute_fisher(seed, applySinv_transpose=applySinv_transpose, verb=verb, compute_cov=False)
@@ -213,7 +151,7 @@ class PSpec():
 
         if type(applySinv_transpose)!=type(lambda x: x):
             applySinv_transpose = self.applySinv
-            print("## Caution: assuming S^-1 is symmetric!")
+            print("## Caution: assuming S^-1 is Hermitian!")
 
         assert len(Pk_cov)!=0, "Must provide fiducial power spectrum if computing covariance!"
         assert len(np.asarray(Pk_cov).shape)==2, "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
@@ -226,7 +164,7 @@ class PSpec():
         """This computes the a rectangular matrix used to window-convolve the theory, using a single GRF simulation, created internally.
         We also compute and output the contribution to the (square) Fisher matrix, used for normalization.
         
-        We must specify the desired theory binning and lmax. An optional input is a function that applies S^-T to a map. The code will assume S^-T = S^-1 if this is not supplied.
+        We must specify the desired theory binning and lmax. An optional input is a function that applies S^-dagger to a map. The code will assume S^-dagger = S^-1 if this is not supplied.
         
         Finally, we can optionally add wide-angle effects (for the theory matrix, not the Fisher matrix)."""
 
@@ -235,7 +173,7 @@ class PSpec():
 
         if type(applySinv_transpose)!=type(lambda x: x):
             applySinv_transpose = self.applySinv
-            print("## Caution: assuming S^-1 is symmetric!")
+            print("## Caution: assuming S^-1 is Hermitian!")
 
         # Check k-binning array
         k_bins_theory = np.asarray(k_bins_theory)
@@ -253,18 +191,12 @@ class PSpec():
             assert not self.odd_l, "Cannot include wide-angle effects for odd l!"
             assert lmax_theory>1, "There are no wide-angle effects for the monopole!"
             assert lmax_theory<=4, "Higher-order effects not yet implemented!"
-            if verb: print("Adding odd-ell wide-angle effects up to l = %d"%((lmax_theory+1)//2))
+            if verb: print("Adding odd-ell wide-angle effects up to l = %d"%lmax_theory)
             if not hasattr(self.base,'modr_grid'):
                 self.base.modr_grid = np.sqrt(self.base.r_grids[0]**2.+self.base.r_grids[1]**2.+self.base.r_grids[2]**2.)
-            odd_l_theory = True
         else:
             if not self.odd_l:
                 assert lmax_theory%2==0, "Must use even lmax if not including wide-angle effects!"
-            odd_l_theory = self.odd_l
-        if odd_l_theory and not include_wideangle:
-            Nl_theory = lmax_theory+1
-        else:
-            Nl_theory = lmax_theory//2+1
         
         # Run main code
         return self._compute_fisher(seed, applySinv_transpose, verb=verb, compute_theory=True, k_bins_theory=k_bins_theory, lmax_theory=lmax_theory, include_wideangle=include_wideangle)
@@ -291,6 +223,15 @@ class PSpec():
         # Initialize output
         fisher_matrix = np.zeros((self.N_bins,self.N_bins))
         if compute_theory:
+            # Define lmax and check wide-angle effects
+            if include_wideangle:
+                odd_l_theory = True
+            else:
+                odd_l_theory = self.odd_l
+            if odd_l_theory and not include_wideangle:
+                Nl_theory = lmax_theory+1
+            else:
+                Nl_theory = lmax_theory//2+1
             Nk_th = len(k_bins_theory)-1
             N_bins_th = Nl_theory*Nk_th
             binning_matrix = np.zeros((self.N_bins,N_bins_th))
@@ -381,7 +322,7 @@ class PSpec():
                     return self.base.to_real(CPdSid_map_fourier)+CPdSid_map_real 
         
         def apply_filter(input_map):
-            """Apply S^-1 P to a map. Note that the input is either to be in Fourier-space if const_mask=True else in real-space."""
+            """Apply S^-1 P or S^-1 C S^-dagger to a map. Note that the input is either in Fourier-space if const_mask=True else in real-space."""
             if not compute_cov:
                 if self.const_mask:
                     return self.mask_mean*self.applySinv(input_map, input_type='fourier', output_type='fourier')
@@ -390,9 +331,9 @@ class PSpec():
             else:
                 # Apply S^-1 P Cov P^dagger S^-dagger in order to compute covariances
                 if self.const_mask:
-                    PdSid_map = self.mask_mean*applySinv_transpose(input_map, input_type='fourier', output_type='fourier')
-                    PCPdSid_map = self.mask_mean*apply_xi(PdSid_map, output_type='fourier')
-                    return self.applySinv(PCPdSid_map, input_type='fourier', output_type='fourier')
+                    Sid_map = applySinv_transpose(input_map, input_type='fourier', output_type='fourier')
+                    CSid_map = apply_xi(PdSid_map, output_type='fourier')
+                    return self.mask_mean**2*self.applySinv(CSid_map, input_type='fourier', output_type='fourier')
                 else:
                     Sid_map = applySinv_transpose(input_map, input_type='real', output_type='real')
                     PdSid_map_real = self.apply_pointing(Sid_map, transpose=True)
@@ -746,77 +687,103 @@ class PSpec():
 
         return Pk_dict
        
-    ### IDEAL ESTIMATOR
-    def Pk_numerator_ideal(self, data):
-        """Compute the numerator of the idealized power spectrum estimator, weighting by 1/P_fid(k) within each bin. 
-        
-        The estimator does *not* use the mask or S_inv weighting schemes. It also applies only for even ell.
-        
-        This can compute the ideal power spectrum of simulation volumes, or, for suitably normalized input, the FKP power spectrum.
-        """
-        
-        if not hasattr(self, 'Ylm_fourier'):
-            self.Ylm_fourier = self.base._compute_real_harmonics(np.asarray(self.base.k_grids)[:,self.k_filt], self.lmax, odd_l=self.odd_l)
-        print("## Remove Ylm_fourier and _compute_real_harmonics!")
+    def _compute_pk_numerator(self, data, filtering='ideal'):
+        """Internal function to compute the power spectrum numerator. This is used by the Pk_numerator and Pk_numerator_ideal functions."""
+        assert filtering in ['ideal','Sinv'], "Unknown filtering option supplied!"
 
-        # First remove the pixel window function
-        data_fourier = self.base.to_fourier(data)
+        # Check input data type and convert to float64 if necessary
+        assert type(data[0,0,0]) in [np.float32, np.float64], "Data must be of type float32 or float64!"
+        if type(data[0,0,0])==np.float32: 
+            data = np.asarray(data, order='C', dtype=np.float64)
 
+        # First remove the pixel window function, if present
         if self.base.pixel_window!='none':
+            data_fourier = self.base.to_fourier(data)
             data_fourier /= self.base.pixel_window_grid
         
-        # Apply filtering by inverse P(k) and mask mean
-        data_fourier *= self.base.invPk0_grid/np.sqrt(self.sq_mask_mean)
+            # Apply filtering and transform to Fourier space
+            if filtering=='Sinv':
+                Sinv_data_fourier = self.applySinv(data_fourier, input_type='fourier', output_type='fourier')
+            else:
+                Sinv_data_fourier = data_fourier*self.base.invPk0_grid/np.sqrt(self.sq_mask_mean)
+            
+        else:
+            # Apply filtering and transform to Fourier space
+            if filtering=='Sinv':
+                Sinv_data_fourier = self.applySinv(data, input_type='real', output_type='fourier')
+            else:
+                Sinv_data_fourier = self.base.to_fourier(data)*self.base.invPk0_grid/np.sqrt(self.sq_mask_mean)
         
         # Compute real-space map where necessary
         if (self.base.sightline=='local' and self.lmax>0):
-            data_real = self.base.to_real(data_fourier)
-        
-        # Filter to modes of interest
-        data_fourier = data_fourier[self.k_filt].conj()
-        
-        # Compute numerator, applying filtering by inverse P(k) and mask mean
-        real_spec_squared = np.abs(data_fourier)**2
+            Sinv_data_real = self.base.to_real(Sinv_data_fourier)
         
         # Define output array
-        Pk_out = np.zeros(self.Nl_even*self.Nk)
-        
-        # Compute monopole
+        if filtering=='Sinv':
+            Pk_out = np.zeros(self.N_bins, dtype=np.float64)
+        else:
+            Pk_out = np.zeros(self.Nl_even*self.Nk, dtype=np.float64)    
+       
+       # Compute monopole
         for ki in range(self.Nk):
-            Pk_out[ki] = 0.5*np.sum(real_spec_squared[self.filt(ki)]) # integrate over k
-            
+            Pk_out[ki] = 0.5*utils.bin_integrate(Sinv_data_fourier, self.base.modk_grid, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
+        
         # Compute higher multipoles
-        for li in range(1,self.Nl_even):
+        if self.lmax>0:
             
-            if self.base.sightline=='global':
-                # Compute L_ell(mu)*|S^-1 d(k)|^2
-                real_spec_squared_l = real_spec_squared*self.legendres(li*2)
-
-                # Integrate over k
-                for ki in range(self.Nk):
-                    Pk_out[li*self.Nk+ki] = 0.5*np.sum(real_spec_squared_l[self.filt(ki)])
-            
+            # Check number of bins and ordering of spherical harmonic grids
+            if filtering=='Sinv':
+                Nl = self.Nl
+                l_factor = (2-self.odd_l)
             else:
-                # Compute Sum_m Y_lm(k)[S^-1 d]^*(k)[S^-1 d]_lm(k)
-                lm_sum = 0.
-                for lm_ind in range(len(self.Ylm_real[2*li])):
-                    lm_sum += self.Ylm_fourier[2*li][lm_ind]*self.base.to_fourier(data_real*self.Ylm_real[2*li][lm_ind])[self.k_filt]
+                Nl = self.Nl_even
+                l_factor = 2
+            
+            # Iterate over multipoles
+            for li in range(1,Nl):
                 
-                spec_squared_l = self.base.np.real(data_fourier*lm_sum)
-
-                # Integrate over k
-                for ki in range(self.Nk):
-                     Pk_out[li*self.Nk+ki] = 0.5*np.sum(spec_squared_l[self.filt(ki)])
+                if self.base.sightline=='global':
+                    # Compute L_ell(mu)*|S^-1 d(k)|^2, integrated over k
+                    for ki in range(self.Nk):
+                        Pk_out[li*self.Nk+ki] = 0.5*utils.bin_integrate_l(Sinv_data_fourier, self.base.modk_grid, self.base.muk_grid, 2*li, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
+                
+                else:
+                    # Compute Sum_m Y_lm(k)[S^-1 d](k)[S^-1 d]^*_lm(k)
+                    lm_sum = np.zeros(self.base.gridsize, dtype=np.complex128)
+                    for lm_ind in range(len(self.Ylm_real[l_factor*li])):
+                        map_lm = utils.prod_map_real(Sinv_data_real,self.Ylm_real[l_factor*li][lm_ind],self.base.nthreads)
+                        utils.prod_map_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[l_factor*li][lm_ind], lm_sum, self.base.nthreads)
+                
+                    # Ensure output is real
+                    if (filtering=='Sinv' and self.odd_l and li%2==1):
+                        lm_sum *= -1.0j
+                    
+                    # Apply binning
+                    for ki in range(self.Nk):
+                        Pk_out[li*self.Nk+ki] = 0.5*utils.bin_integrate_cross(Sinv_data_fourier, lm_sum, self.base.modk_grid, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
         
         # Add normalization
         Pk_out *= self.base.volume/self.base.gridsize.prod()**2
         
         return Pk_out
+              
+    ### IDEAL ESTIMATOR
+    def Pk_numerator_ideal(self, data):
+        """Compute the numerator of the idealized power spectrum estimator, weighting by 1/P_fid(k) within each bin. 
+        
+        The estimator does *not* use the mask or S^-1 weighting schemes. It also applies only for even ell. We normalize by the mean of the squared mask.
+        
+        This can compute the ideal power spectrum of simulation volumes, or, for suitably normalized input, the FKP power spectrum.
+        """
+        assert data.shape == self.mask.shape, "Data must have same shape as the mask!"
+        
+        # Send to internal function
+        return self._compute_pk_numerator(data, filtering='ideal') 
                 
     def compute_fisher_ideal(self, discreteness_correction=True,Pk_fid='default'):
         """This computes the idealized Fisher matrix for the power spectrum, weighting by 1/P_fid(k) within each bin. 
         
-        We optionally include discreteness correction for ell>0.
+        We optionally include discreteness correction for ell>0. We can use a new fiducial power spectrum by specifying Pk_fid (which is None for unit spectrum).
     
         If 'local' sightlines are being used, this assumes the distant-observer approximation.
         """
@@ -825,6 +792,7 @@ class PSpec():
         # Define output array
         fish = np.zeros((self.Nl_even*self.Nk,self.Nl_even*self.Nk))
         
+        # Define fiducial power spectrum
         if Pk_fid!='default':
             if (np.asarray(Pk_fid)==None).all():
                 k_tmp = np.arange(np.min(self.base.kF)/10.,np.max(self.base.kNy)*2,np.min(self.base.kF)/10.)
@@ -840,50 +808,26 @@ class PSpec():
             invPk0_grid = np.zeros(self.base.gridsize)
             good_filter = (Pk0_grid!=0)&np.isfinite(Pk0_grid)
             invPk0_grid[good_filter] = 1./Pk0_grid[good_filter] 
-            Pk0_grid[~np.isfinite(Pk0_grid)] = 0.
+            del Pk0_grid
             
         else:
             invPk0_grid = self.base.invPk0_grid.copy()
         
-        # Define squared inverse-fiducial P(k), filtering to modes of interest
-        sq_inv_Pk = invPk0_grid[self.k_filt]**2.
-        
         if discreteness_correction:
-
-            # Iterate over fields
+            
+            # Iterate over fields, assembling Fisher matrix diagonal
             for la in range(self.Nl_even):
-                if la==0:
-                    lega = 1
-                else:
-                    lega = self.legendres(2*la)
                 for lb in range(self.Nl_even):
-                    if lb==0:
-                        legab = lega
-                    else:
-                        legab = lega*self.legendres(2*lb)
+                    for bin1 in range(self.Nk):
+                        fish[la*self.Nk+bin1,lb*self.Nk+bin1] = 0.5*utils.bin_integrate_real_ll(invPk0_grid, self.base.modk_grid, self.base.muk_grid, 2*la, 2*lb, self.k_bins[bin1], self.k_bins[bin1+1], self.base.nthreads)
                     
-                    # Assemble fisher matrix
-                    fish_diag = np.zeros(self.Nk)
-                    for bin in range(self.Nk):
-                        fish_diag[bin] = 0.5*np.sum(sq_inv_Pk*legab*self.filt(bin))
-        
-                    # Add to output array
-                    fish[la*self.Nk:(la+1)*self.Nk,lb*self.Nk:(lb+1)*self.Nk] = np.diag(fish_diag)
-
         else:
             # Replace Int L_ell(k.n) L_ell'(k.n) by 1/(2 ell + 1) Kronecker[ell, ell']
-            
-            # Iterate over fields
             for la in range(self.Nl_even):
+                for bin1 in range(self.Nk):
+                    fish[la*self.Nk+bin1,la*self.Nk+bin1] = 0.5/(4.*la+1.)*utils.bin_integrate_real(invPk0_grid, self.base.modk_grid, self.k_bins[bin1], self.k_bins[bin1+1], self.base.nthreads)
                     
-                # Assemble fisher matrix
-                fish_diag = np.zeros(self.Nk)
-                for bin in range(self.Nk):
-                    fish_diag[bin] = 0.5*np.sum(sq_inv_Pk*self.filt(bin))
-        
-                # Add to output array
-                fish[la*self.Nk:(la+1)*self.Nk,la*self.Nk:(la+1)*self.Nk] = np.diag(fish_diag)/(4.*la+1.)
-                    
+        # Save attributes and return                     
         self.fish_ideal = fish
         self.inv_fish_ideal = np.linalg.inv(self.fish_ideal)
         

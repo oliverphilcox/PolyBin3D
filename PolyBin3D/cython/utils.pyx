@@ -92,31 +92,65 @@ cpdef double bin_integrate_l(double complex[:,:,::1] spec, double[:,:,::1] modk,
     """Compute Sum_k |d(k)|^2 L_l(k.n) across all k in range."""
     cdef long ik1, ik2, ik3, nk1=modk.shape[0], nk2=modk.shape[1], nk3=modk.shape[2]
     cdef double out = 0.
-    cdef double mu, leg
-
+    
     # Iterate over k grid  
     with nogil:
         for ik1 in prange(nk1, schedule='static', num_threads=nthreads):
             for ik2 in xrange(nk2):
                 for ik3 in xrange(nk3):
                     if (modk[ik1,ik2,ik3]>=kmin) and (modk[ik1,ik2,ik3]<kmax):
-                        # Compute legendre polynomial explicitly
-                        mu = muk[ik1,ik2,ik3]
-                        if l==0:
-                            leg = 1.
-                        elif l==1:
-                            leg = mu
-                        elif l==2:
-                            leg = 1./2.*(3*mu**2-1)
-                        elif l==3:
-                            leg = (-3*mu + 5*mu**3)/2.
-                        elif l==4:
-                            leg = (3 - 30*mu**2 + 35*mu**4)/8.
-                        elif l==5:
-                            leg = (15*mu - 70*mu**3 + 63*mu**5)/8.
-                        elif l==6: 
-                            leg = (-5 + 105*mu**2 - 315*mu**4 + 231*mu**6)/16.
-                        out += creal(spec[ik1,ik2,ik3]*spec[ik1,ik2,ik3].conjugate())*leg
+                        out += creal(spec[ik1,ik2,ik3]*spec[ik1,ik2,ik3].conjugate())*legendre(l, muk[ik1,ik2,ik3])
+    return out
+
+cdef inline double legendre(int l, double mu) noexcept nogil:
+    """Compute the Legendre multipole L_l(mu). We use the explicit forms for speed."""
+    if l==0:
+        return 1.
+    elif l==1:
+        return mu
+    elif l==2:
+        return 1./2.*(3*mu**2-1)
+    elif l==3:
+        return (-3*mu + 5*mu**3)/2.
+    elif l==4:
+        return (3 - 30*mu**2 + 35*mu**4)/8.
+    elif l==5:
+        return (15*mu - 70*mu**3 + 63*mu**5)/8.
+    elif l==6: 
+        return (-5 + 105*mu**2 - 315*mu**4 + 231*mu**6)/16.               
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.cdivision(True)
+cpdef double bin_integrate_real_ll(double[:,:,::1] spec, double[:,:,::1] modk, double[:,:,::1] muk, int l1, int l2, double kmin, double kmax, int nthreads):
+    """Compute Sum_k d(k)^2 L_l1(k.n)L_l2(k.n) across all k in range for real d(k)."""
+    cdef long ik1, ik2, ik3, nk1=modk.shape[0], nk2=modk.shape[1], nk3=modk.shape[2]
+    cdef double out = 0.
+    
+    # Iterate over k grid  
+    with nogil:
+        for ik1 in prange(nk1, schedule='static', num_threads=nthreads):
+            for ik2 in xrange(nk2):
+                for ik3 in xrange(nk3):
+                    if (modk[ik1,ik2,ik3]>=kmin) and (modk[ik1,ik2,ik3]<kmax):
+                        out += spec[ik1,ik2,ik3]*spec[ik1,ik2,ik3]*legendre(l1, muk[ik1,ik2,ik3])*legendre(l2, muk[ik1,ik2,ik3])
+    return out
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.cdivision(True)
+cpdef double bin_integrate_real(double[:,:,::1] spec, double[:,:,::1] modk, double kmin, double kmax, int nthreads):
+    """Compute Sum_k d(k)^2 across all k in range for real d(k)."""
+    cdef long ik1, ik2, ik3, nk1=modk.shape[0], nk2=modk.shape[1], nk3=modk.shape[2]
+    cdef double out = 0.
+    
+    # Iterate over k grid  
+    with nogil:
+        for ik1 in prange(nk1, schedule='static', num_threads=nthreads):
+            for ik2 in xrange(nk2):
+                for ik3 in xrange(nk3):
+                    if (modk[ik1,ik2,ik3]>=kmin) and (modk[ik1,ik2,ik3]<kmax):
+                        out += spec[ik1,ik2,ik3]*spec[ik1,ik2,ik3]
     return out
 
 @cython.boundscheck(False)
@@ -126,31 +160,14 @@ cpdef double bin_integrate_cross_l(double complex[:,:,::1] spec1, double complex
     """Compute Sum_k d1(k)Conj[d2(k)] L_l(k.n) across all k in range."""
     cdef long ik1, ik2, ik3, nk1=modk.shape[0], nk2=modk.shape[1], nk3=modk.shape[2]
     cdef double out = 0.
-    cdef double mu, leg
-
+    
     # Iterate over k grid  
     with nogil:
         for ik1 in prange(nk1, schedule='static', num_threads=nthreads):
             for ik2 in xrange(nk2):
                 for ik3 in xrange(nk3):
                     if (modk[ik1,ik2,ik3]>=kmin) and (modk[ik1,ik2,ik3]<kmax):
-                        # Compute legendre polynomial explicitly
-                        mu = muk[ik1,ik2,ik3]
-                        if l==0:
-                            leg = 1.
-                        elif l==1:
-                            leg = mu
-                        elif l==2:
-                            leg = 1./2.*(3*mu**2-1)
-                        elif l==3:
-                            leg = (-3*mu + 5*mu**3)/2.
-                        elif l==4:
-                            leg = (3 - 30*mu**2 + 35*mu**4)/8.
-                        elif l==5:
-                            leg = (15*mu - 70*mu**3 + 63*mu**5)/8.
-                        elif l==6: 
-                            leg = (-5 + 105*mu**2 - 315*mu**4 + 231*mu**6)/16.
-                        out += creal(spec1[ik1,ik2,ik3]*spec2[ik1,ik2,ik3].conjugate())*leg
+                        out += creal(spec1[ik1,ik2,ik3]*spec2[ik1,ik2,ik3].conjugate())*legendre(l, muk[ik1,ik2,ik3])
     return out
 
 @cython.boundscheck(False)
@@ -160,7 +177,7 @@ cpdef np.ndarray[np.float64_t,ndim=1] bin_integrate_cross_all_l(double complex[:
     """Compute Sum_k d1(k)d2(-k) L_l(k.n) across all k in range."""
     cdef long ik1, ik2, ik3, ibin, nk1=modk.shape[0], nk2=modk.shape[1], nk3=modk.shape[2], nbin=k_edges.shape[0]-1
     cdef np.ndarray[np.float64_t,ndim=1] out = np.zeros(nbin, dtype=np.float64)
-    cdef double tmp, mu, leg
+    cdef double tmp
 
     # Iterate over k grid  
     for ibin in prange(nbin, nogil=True, schedule='static', num_threads=nthreads):
@@ -169,83 +186,8 @@ cpdef np.ndarray[np.float64_t,ndim=1] bin_integrate_cross_all_l(double complex[:
             for ik2 in xrange(nk2):
                 for ik3 in xrange(nk3):
                     if (modk[ik1,ik2,ik3]>=k_edges[ibin]) and (modk[ik1,ik2,ik3]<k_edges[ibin+1]):
-                        # Compute legendre polynomial explicitly
-                        mu = muk[ik1,ik2,ik3]
-                        if l==0:
-                            leg = 1.
-                        elif l==1:
-                            leg = mu
-                        elif l==2:
-                            leg = 1./2.*(3*mu**2-1)
-                        elif l==3:
-                            leg = (-3*mu + 5*mu**3)/2.
-                        elif l==4:
-                            leg = (3 - 30*mu**2 + 35*mu**4)/8.
-                        elif l==5:
-                            leg = (15*mu - 70*mu**3 + 63*mu**5)/8.
-                        elif l==6: 
-                            leg = (-5 + 105*mu**2 - 315*mu**4 + 231*mu**6)/16.
-                        tmp = tmp + creal(spec1[ik1,ik2,ik3]*spec2[ik1,ik2,ik3].conjugate())*leg
+                        tmp = tmp + creal(spec1[ik1,ik2,ik3]*spec2[ik1,ik2,ik3].conjugate())*legendre(l, muk[ik1,ik2,ik3])
         out[ibin] = tmp
-    return out
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-@cython.cdivision(True)
-cpdef np.ndarray[np.float64_t,ndim=1] bin_integrate_cross_vec(double complex[:,:,::1] spec1, double complex[:,:,:,::1] spec2, double[:,:,::1] modk, double kmin, double kmax, int nthreads):
-    """Compute Sum_k |d(k)|^2 Q(i,k) across all k in range."""
-    cdef long ik1, ik2, ik3, iq
-    cdef long nk1=modk.shape[0], nk2=modk.shape[1], nk3=modk.shape[2], nq = spec2.shape[0]
-    cdef double tmp
-    cdef np.ndarray[np.float64_t,ndim=1] out = np.zeros(nq,dtype=np.float64)
-
-    # Iterate over k grid  
-    for iq in prange(nq,nogil=True, schedule='static', num_threads=nthreads):
-        tmp = 0.
-        for ik1 in xrange(nk1):
-            for ik2 in xrange(nk2):
-                for ik3 in xrange(nk3):
-                    if (modk[ik1,ik2,ik3]>=kmin) and (modk[ik1,ik2,ik3]<kmax):
-                            tmp = tmp+creal(spec1[ik1,ik2,ik3]*spec2[iq,ik1,ik2,ik3].conjugate())
-        out[iq] = tmp
-    return out
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-@cython.cdivision(True)
-cpdef np.ndarray[np.float64_t,ndim=1] bin_integrate_cross_vec_l(double complex[:,:,::1] spec1, double complex[:,:,:,::1] spec2, double[:,:,::1] modk, double[:,:,::1] muk, int l, double kmin, double kmax, int nthreads):
-    """Compute Sum_k d1(k)Conj[d2(k)] L_l(k.n) Q(i,k) across all k in range."""
-    cdef long ik1, ik2, ik3, iq
-    cdef long nk1=modk.shape[0], nk2=modk.shape[1], nk3=modk.shape[2], nq=spec2.shape[0]
-    cdef np.ndarray[np.float64_t,ndim=1] out = np.zeros(nq,dtype=np.float64)
-    cdef double mu, leg, tmp
-
-    # Iterate over k grid  
-    for iq in prange(nq,nogil=True,schedule='static',num_threads=nthreads):
-        tmp = 0.
-        for ik1 in xrange(nk1):
-            for ik2 in xrange(nk2):
-                for ik3 in xrange(nk3):
-                    if (modk[ik1,ik2,ik3]>=kmin) and (modk[ik1,ik2,ik3]<kmax):
-                        # Compute legendre polynomial explicitly
-                        mu = muk[ik1,ik2,ik3]
-                        if l==0:
-                            leg = 1.
-                        elif l==1:
-                            leg = mu
-                        elif l==2:
-                            leg = 1./2.*(3*mu**2-1)
-                        elif l==3:
-                            leg = (-3*mu + 5*mu**3)/2.
-                        elif l==4:
-                            leg = (3 - 30*mu**2 + 35*mu**4)/8.
-                        elif l==5:
-                            leg = (15*mu - 70*mu**3 + 63*mu**5)/8.
-                        elif l==6: 
-                            leg = (-5 + 105*mu**2 - 315*mu**4 + 231*mu**6)/16.
-                        tmp = tmp + creal(spec1[ik1,ik2,ik3]*spec2[iq,ik1,ik2,ik3].conjugate())*leg
-        out[iq] = tmp
     return out
 
 @cython.boundscheck(False)
@@ -324,6 +266,24 @@ cpdef np.ndarray[np.float64_t,ndim=3] prod_map_real(double[:,:,::1] map1, double
             for ix2 in xrange(nx2):
                 for ix3 in xrange(nx3):
                     out[ix1,ix2,ix3] = map1[ix1,ix2,ix3]*map2[ix1,ix2,ix3]
+    return out
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.cdivision(True)
+cpdef np.ndarray[np.float64_t,ndim=3] prod_map_real_diff(double[:,:,::1] map1, double[:,:,::1] map2, double[:,:,::1] map3, double[:,:,::1] map4, int nthreads):
+    """Compute map1(x)map2(x)."""
+    cdef long ix1, ix2, ix3, nx1 = map1.shape[0], nx2 = map1.shape[1], nx3 = map1.shape[2]
+    cdef np.ndarray[np.float64_t,ndim=3] out = np.empty((nx1,nx2,nx3),dtype=np.float64)
+    assert nx1==map2.shape[0]
+    assert nx2==map2.shape[1]
+    assert nx3==map2.shape[2]
+
+    with nogil:
+        for ix1 in prange(nx1, schedule='static', num_threads=nthreads):
+            for ix2 in xrange(nx2):
+                for ix3 in xrange(nx3):
+                    out[ix1,ix2,ix3] = map1[ix1,ix2,ix3]*map2[ix1,ix2,ix3]-map3[ix1,ix2,ix3]*map4[ix1,ix2,ix3]
     return out
 
 @cython.boundscheck(False)
@@ -475,8 +435,8 @@ cpdef np.ndarray[np.complex128_t,ndim=3] filt_map_full(double complex[:,:,::1] k
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.cdivision(True)
-cpdef void filt_map_full_sum(double complex[:,:,::1] kmap, double[:,:,::1] modk, double kmin, double kmax, double complex[:,:,::1] out, double factor, int nthreads):
-    """Compute factor * map1(x)map2(x) and add to output."""
+cpdef void filt_map_full_sum(double complex[:,:,::1] kmap, double[:,:,::1] modk, double kmin, double kmax, double complex[:,:,::1] out, int nthreads):
+    """Compute map1(x)map2(x) and add to output."""
     cdef long ix1, ix2, ix3, nx1 = kmap.shape[0], nx2 = kmap.shape[1], nx3 = kmap.shape[2]
     
     with nogil:
@@ -484,7 +444,7 @@ cpdef void filt_map_full_sum(double complex[:,:,::1] kmap, double[:,:,::1] modk,
             for ix2 in xrange(nx2):
                 for ix3 in xrange(nx3):
                     if (modk[ix1,ix2,ix3]>=kmin) and (modk[ix1,ix2,ix3]<kmax):
-                        out[ix1,ix2,ix3] += factor * kmap[ix1,ix2,ix3]
+                        out[ix1,ix2,ix3] += kmap[ix1,ix2,ix3]
     
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -493,63 +453,32 @@ cpdef np.ndarray[np.complex128_t,ndim=3] filt_map_full_l(double complex[:,:,::1]
     """Compute map1(x)map2(x)Legendre(ell)."""
     cdef long ix1, ix2, ix3, nx1 = kmap.shape[0], nx2 = kmap.shape[1], nx3 = kmap.shape[2]
     cdef np.ndarray[np.complex128_t,ndim=3] out = np.zeros((nx1,nx2,nx3),dtype=np.complex128)
-    cdef double leg, mu
-
+    
     with nogil:
         for ix1 in prange(nx1, schedule='static', num_threads=nthreads):
             for ix2 in xrange(nx2):
                 for ix3 in xrange(nx3):
                     if (modk[ix1,ix2,ix3]>=kmin) and (modk[ix1,ix2,ix3]<kmax):
-                        # Compute legendre polynomial explicitly
-                        mu = muk[ix1,ix2,ix3]
-                        if l==0:
-                            leg = 1.
-                        elif l==1:
-                            leg = mu
-                        elif l==2:
-                            leg = 1./2.*(3*mu**2-1)
-                        elif l==3:
-                            leg = (-3*mu + 5*mu**3)/2.
-                        elif l==4:
-                            leg = (3 - 30*mu**2 + 35*mu**4)/8.
-                        elif l==5:
-                            leg = (15*mu - 70*mu**3 + 63*mu**5)/8.
-                        elif l==6: 
-                            leg = (-5 + 105*mu**2 - 315*mu**4 + 231*mu**6)/16.
-                        out[ix1,ix2,ix3] = kmap[ix1,ix2,ix3]*leg
+                        out[ix1,ix2,ix3] = kmap[ix1,ix2,ix3]*legendre(l, muk[ix1,ix2,ix3])
     return out
+
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.cdivision(True)
-cpdef void filt_map_full_l_sum(double complex[:,:,::1] kmap, double[:,:,::1] modk, double[:,:,::1] muk, int l, double kmin, double kmax, double complex[:,:,::1] out, double factor, int nthreads):
-    """Compute factor * map1(x)map2(x)Legendre(ell) and add to array."""
+cpdef np.ndarray[np.complex128_t,ndim=3] filt_map_full_ll(double complex[:,:,::1] kmap, double[:,:,::1] modk, double[:,:,::1] muk, int l, int lp, double kmin, double kmax, int nthreads):
+    """Compute map1(x)map2(x)Legendre(ell)Legendre(ell')."""
     cdef long ix1, ix2, ix3, nx1 = kmap.shape[0], nx2 = kmap.shape[1], nx3 = kmap.shape[2]
-    cdef double leg, mu
-
+    cdef np.ndarray[np.complex128_t,ndim=3] out = np.zeros((nx1,nx2,nx3),dtype=np.complex128)
+    
     with nogil:
         for ix1 in prange(nx1, schedule='static', num_threads=nthreads):
             for ix2 in xrange(nx2):
                 for ix3 in xrange(nx3):
                     if (modk[ix1,ix2,ix3]>=kmin) and (modk[ix1,ix2,ix3]<kmax):
-                        # Compute legendre polynomial explicitly
-                        mu = muk[ix1,ix2,ix3]
-                        if l==0:
-                            leg = 1.
-                        elif l==1:
-                            leg = mu
-                        elif l==2:
-                            leg = 1./2.*(3*mu**2-1)
-                        elif l==3:
-                            leg = (-3*mu + 5*mu**3)/2.
-                        elif l==4:
-                            leg = (3 - 30*mu**2 + 35*mu**4)/8.
-                        elif l==5:
-                            leg = (15*mu - 70*mu**3 + 63*mu**5)/8.
-                        elif l==6: 
-                            leg = (-5 + 105*mu**2 - 315*mu**4 + 231*mu**6)/16.
-                        out[ix1,ix2,ix3] += factor*kmap[ix1,ix2,ix3]*leg
-    
+                        out[ix1,ix2,ix3] = kmap[ix1,ix2,ix3]*legendre(l, muk[ix1,ix2,ix3])*legendre(lp, muk[ix1,ix2,ix3])
+    return out
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.cdivision(True)
@@ -686,32 +615,9 @@ cpdef dict compute_real_harmonics(double[:,:,:,::1] coordinates, int lmax, bint 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.cdivision(True)
-cpdef np.ndarray[np.float64_t,ndim=2] assemble_fish(double complex[:,:,:,::1] f1, double complex[:,:,:,::1] f2, int nthreads):
-    """Compute map1(x)map2(x) and add to existing array."""
-    cdef long i_out, i_out1, i_out2, i1, i2, i3, n_out = f1.shape[0], n1 = f1.shape[1], n2 = f1.shape[2], n3 = f1.shape[3]
-    cdef np.ndarray[np.float64_t,ndim=2] out = np.zeros((n_out,n_out), dtype=np.float64)
-    cdef double tmp=0.
-
-    with nogil:
-        for i_out in prange(n_out*n_out, schedule='static', num_threads=nthreads):
-            i_out1 = i_out//n_out
-            i_out2 = i_out%n_out
-            tmp = 0
-            for i1 in xrange(n1):
-                for i2 in xrange(n2):
-                    for i3 in xrange(n3):
-                        if f1[i_out1,i1,i2,i3]!=0 and f2[i_out2,i1,i2,i3]!=0:
-                            tmp += creal(f1[i_out1,i1,i2,i3].conjugate()*f2[i_out2,i1,i2,i3])
-            out[i_out1,i_out2] += tmp
-    return out
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-@cython.cdivision(True)
-cpdef np.ndarray[np.float64_t,ndim=1] assemble_fish_row(double complex[:,:,:,::1] f1, double complex[:,:,::1] f2, int nthreads):
-    """Compute map1(x)map2(x) and add to existing array."""
-    cdef long i_out, i1, i2, i3, n_out = f1.shape[0], n1 = f1.shape[1], n2 = f1.shape[2], n3 = f1.shape[3]
+cpdef np.ndarray[np.complex128_t,ndim=1] assemble_fish_filt(double complex[:,:,::1] kmap, double complex[:,:,:,::1] Q_array, double[:,:,::1] modk, double kmin, double kmax, int nthreads):
+    """Filter a map and add it to the Fisher matrix"""
+    cdef long i_out, i1, i2, i3, n_out = Q_array.shape[0], n1 = Q_array.shape[1], n2 = Q_array.shape[2], n3 = Q_array.shape[3]
     cdef np.ndarray[np.float64_t,ndim=1] out = np.empty(n_out, dtype=np.float64)
     cdef double tmp=0.
 
@@ -721,27 +627,9 @@ cpdef np.ndarray[np.float64_t,ndim=1] assemble_fish_row(double complex[:,:,:,::1
             for i1 in xrange(n1):
                 for i2 in xrange(n2):
                     for i3 in xrange(n3):
-                        if f1[i_out,i1,i2,i3]!=0:
-                            tmp = tmp + creal(f1[i_out,i1,i2,i3].conjugate()*f2[i1,i2,i3])
+                        if (modk[i1,i2,i3]>=kmin) and (modk[i1,i2,i3]<kmax):
+                            tmp = tmp + creal(kmap[i1,i2,i3].conjugate()*Q_array[i_out,i1,i2,i3])
             out[i_out] = tmp
-    return out
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-@cython.cdivision(True)
-cpdef np.ndarray[np.float64_t,ndim=1] assemble_shot(double complex[:,::1] f1, double complex[::1] f2, int nthreads):
-    """Compute map1(x)map2(x) and add to existing array."""
-    cdef long i_out, i_in, n_out = f1.shape[0], n_in = f1.shape[1]
-    cdef np.ndarray[np.float64_t,ndim=1] out = np.zeros((n_out), dtype=np.float64)
-    cdef double tmp=0.
-
-    with nogil:
-        for i_out in prange(n_out, schedule='static', num_threads=nthreads):
-            tmp = 0.
-            for i_in in xrange(n_in):
-                if f1[i_out,i_in]!=0:
-                    tmp += creal(f1[i_out,i_in].conjugate()*f2[i_in])
-            out[i_out] += tmp
     return out
 
 @cython.boundscheck(False)
@@ -767,6 +655,33 @@ cpdef np.ndarray[np.float64_t,ndim=1] assemble_b3_all(double[:,:,:,:,::1] g_maps
             for i2 in xrange(n2):
                 for i3 in xrange(n3):
                     tmp = tmp+g_maps[0][bin1][i1,i2,i3]*g_maps[0][bin2][i1,i2,i3]*g_maps[l//2][bin3][i1,i2,i3]
+        out[index] = tmp
+    
+    return out
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.cdivision(True)
+cpdef np.ndarray[np.float64_t,ndim=1] assemble_bshot_all(double[:,:,:,:,::1] gA_maps, double[:,:,:,:,::1] gB_maps, double[:,:,:,:,::1] gC_maps, long[:,::1] all_bins, int nthreads):
+    """Assemble the bispectrum numerator from a set of g_lb(x) maps."""
+    cdef long i1, i2, i3, n1 = gA_maps.shape[2], n2 = gA_maps.shape[3], n3 = gA_maps.shape[4]
+    cdef long index, l, bin1, bin2, bin3, n_bins = len(all_bins)
+    cdef double tmp
+    cdef np.ndarray[np.float64_t,ndim=1] out=np.zeros(n_bins, dtype=np.float64)
+
+    for index in prange(n_bins,nogil=True, schedule='static', num_threads=nthreads):
+        # Define bins
+        bin1 = all_bins[index][0]
+        bin2 = all_bins[index][1]
+        bin3 = all_bins[index][2]
+        l = all_bins[index][3]
+        
+        # Sum over maps
+        tmp = 0
+        for i1 in xrange(n1):
+            for i2 in xrange(n2):
+                for i3 in xrange(n3):
+                    tmp = tmp+(gA_maps[0][bin1][i1,i2,i3]*gB_maps[0][bin2][i1,i2,i3]*gC_maps[l//2][bin3][i1,i2,i3]+gA_maps[0][bin1][i1,i2,i3]*gC_maps[0][bin2][i1,i2,i3]*gB_maps[l//2][bin3][i1,i2,i3]+gB_maps[0][bin1][i1,i2,i3]*gA_maps[0][bin2][i1,i2,i3]*gC_maps[l//2][bin3][i1,i2,i3]+gB_maps[0][bin1][i1,i2,i3]*gC_maps[0][bin2][i1,i2,i3]*gA_maps[l//2][bin3][i1,i2,i3]+gC_maps[0][bin1][i1,i2,i3]*gA_maps[0][bin2][i1,i2,i3]*gB_maps[l//2][bin3][i1,i2,i3]+gC_maps[0][bin1][i1,i2,i3]*gB_maps[0][bin2][i1,i2,i3]*gA_maps[l//2][bin3][i1,i2,i3])
         out[index] = tmp
     
     return out
@@ -826,68 +741,4 @@ cpdef double sum_prod3(double[:,:,::1] map1, double[:,:,::1] map2, double[:,:,::
         for i2 in xrange(n2):
             for i3 in xrange(n3):
                 out += map1[i1,i2,i3]*map2[i1,i2,i3]*map3[i1,i2,i3]
-    return out
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-@cython.cdivision(True)
-cpdef void ravel_sum(double complex[:,:,:,::1] tmpQ, double complex[:,::1] Q, double phase, int nthreads):
-    """Unravel a large array and add it to a sum, including some phase term."""
-    cdef long i_bin, i1, i2, i3, n_bins = tmpQ.shape[0], n1 = tmpQ.shape[1], n2 = tmpQ.shape[2], n3 = tmpQ.shape[3]
-
-    for i_bin in prange(n_bins, nogil=True, schedule='static', num_threads=nthreads):
-        for i1 in xrange(n1):
-            for i2 in xrange(n2):
-                for i3 in xrange(n3):
-                    Q[i_bin, i1*n2*n3 + i2*n3 + i3] += phase * tmpQ[i_bin, i1, i2, i3]
-    
-@cython.boundscheck(False)
-@cython.wraparound(False)
-@cython.cdivision(True)
-cpdef void ravel_sum_single(double complex[:,:,::1] tmpQ, double complex[:] Q, double phase, int nthreads):
-    """Unravel a large array and add it to a sum, including some phase term."""
-    cdef long i1, i2, i3, n1 = tmpQ.shape[0], n2 = tmpQ.shape[1], n3 = tmpQ.shape[2]
-
-    for i1 in prange(n1, nogil=True, schedule='static', num_threads=nthreads):
-        for i2 in xrange(n2):
-            for i3 in xrange(n3):
-                Q[i1*n2*n3 + i2*n3 + i3] += phase * tmpQ[i1, i2, i3]
-    
-
-# @cython.boundscheck(False)
-# @cython.wraparound(False)
-# @cython.cdivision(True)
-# cpdef void isolate_pairs(double[:,:,::1] mask, double[:,:,:,::1] r_grids, double[:,:,::1] modr_grid, double theta_cut, int nthreads):
-#     """Find nearby pairs."""
-#     cdef long i1, i2, i3, j1, j2, j3, n1 = mask.shape[0], n2 = mask.shape[1], n3 = mask.shape[2]
-#     cdef double cosine, norm, norm2, cos_crit = cos(theta_cut)
-#     cdef long count=0, tot=0
-#     cdef int dn = 24
-
-#     cdef double dx = r_grids[0][1,0,0]-r_grids[0][0,0,0]
-#     cdef int 
-
-#     for i1 in prange(n1,nogil=True,num_threads=nthreads):
-#         for i2 in xrange(n2):
-#             for i3 in xrange(n3):
-#                 if mask[i1,i2,i3]==0: continue
-#                 norm = modr_grid[i1,i2,i3]
-#                 for j1 in xrange(max(i1-dn,0),min(i1+dn,n1)):
-#                     for j2 in xrange(max(i2-dn,0),min(i2+dn,n2)):
-#                         for j3 in xrange(max(i3-dn,0),min(i3+dn,n3)):
-#                             if mask[j1,j2,j3]==0: continue
-#                             norm2 = modr_grid[j1,j2,j3]
-#                             cosine = x1*x2 + y1*y2 + z1*z2
-#                             if cosine>cos_crit*norm*norm2
-#                                 count += 1
-#                             tot += 1
-#     print(count,tot,float(count)/float(tot))
-
-# theta_cut = 0.05*np.pi/180.
-# if not hasattr(self.base,'modr_grid'):
-#     self.base.modr_grid = np.sqrt(self.base.r_grids[0]**2.+self.base.r_grids[1]**2.+self.base.r_grids[2]**2.)
-# # angr_grids = np.asarray(self.base.r_grids)/self.base.modr_grid
-# t1 = time.time()
-# utils.isolate_pairs(self.mask, np.asarray(self.base.r_grids), self.base.modr_grid, theta_cut, self.base.nthreads)
-# print(time.time()-t1)
-        
+    return out        
