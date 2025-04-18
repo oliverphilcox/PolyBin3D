@@ -37,12 +37,11 @@ cpdef double bin_integrate_cross(double complex[:,:,::1] spec1, double complex[:
     cdef double out = 0.
 
     # Iterate over k grid  
-    with nogil:
-        for ik1 in prange(nk1, schedule='static', num_threads=nthreads):
-            for ik2 in xrange(nk2):
-                for ik3 in xrange(nk3):
-                    if (modk[ik1,ik2,ik3]>=kmin) and (modk[ik1,ik2,ik3]<kmax):
-                        out += creal(spec1[ik1,ik2,ik3]*spec2[ik1,ik2,ik3].conjugate())
+    for ik1 in prange(nk1, nogil=True, schedule='static', num_threads=nthreads):
+        for ik2 in xrange(nk2):
+            for ik3 in xrange(nk3):
+                if (modk[ik1,ik2,ik3]>=kmin) and (modk[ik1,ik2,ik3]<kmax):
+                    out += creal(spec1[ik1,ik2,ik3]*spec2[ik1,ik2,ik3].conjugate())
     return out
 
 @cython.boundscheck(False)
@@ -134,6 +133,50 @@ cpdef double bin_integrate_real_ll(double[:,:,::1] spec, double[:,:,::1] modk, d
                 for ik3 in xrange(nk3):
                     if (modk[ik1,ik2,ik3]>=kmin) and (modk[ik1,ik2,ik3]<kmax):
                         out += spec[ik1,ik2,ik3]*spec[ik1,ik2,ik3]*legendre(l1, muk[ik1,ik2,ik3])*legendre(l2, muk[ik1,ik2,ik3])
+    return out
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.cdivision(True)
+cpdef np.ndarray[np.float64_t,ndim=1] bin_integrate_real_ll_vec(double[:,:,::1] spec, double[:,:,::1] modk, double[:,:,::1] muk, int l1, int l2, double[:] k_edges, int nthreads):
+    """Compute Sum_k d(k)^2 L_l1(k.n)L_l2(k.n) across all k in range for real d(k)."""
+    cdef long ik1, ik2, ik3, nk1=modk.shape[0], nk2=modk.shape[1], nk3=modk.shape[2]
+    cdef long il, Nl = k_edges.shape[0]-1
+    cdef double tmp
+    cdef np.ndarray[np.float64_t,ndim=1] out = np.zeros(Nl, dtype=np.float64)
+    
+    # Iterate over k grid  
+    with nogil:
+        for il in prange(Nl, schedule='static', num_threads=nthreads):
+            tmp = 0.
+            for ik1 in xrange(nk1):
+                for ik2 in xrange(nk2):
+                    for ik3 in xrange(nk3):
+                        if (modk[ik1,ik2,ik3]>=k_edges[il]) and (modk[ik1,ik2,ik3]<k_edges[il+1]):
+                            tmp = tmp + spec[ik1,ik2,ik3]**2*legendre(l1, muk[ik1,ik2,ik3])*legendre(l2, muk[ik1,ik2,ik3])
+            out[il] = tmp
+    return out
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.cdivision(True)
+cpdef np.ndarray[np.float64_t,ndim=1] bin_integrate_real_vec(double[:,:,::1] spec, double[:,:,::1] modk, double[:] k_edges, int nthreads):
+    """Compute Sum_k d(k)^2 across all k in range for real d(k)."""
+    cdef long ik1, ik2, ik3, nk1=modk.shape[0], nk2=modk.shape[1], nk3=modk.shape[2]
+    cdef long il, Nl = k_edges.shape[0]-1
+    cdef double tmp
+    cdef np.ndarray[np.float64_t,ndim=1] out = np.zeros(Nl, dtype=np.float64)
+    
+    # Iterate over k grid  
+    with nogil:
+        for il in prange(Nl, schedule='static', num_threads=nthreads):
+            tmp = 0.
+            for ik1 in xrange(nk1):
+                for ik2 in xrange(nk2):
+                    for ik3 in xrange(nk3):
+                        if (modk[ik1,ik2,ik3]>=k_edges[il]) and (modk[ik1,ik2,ik3]<k_edges[il+1]):
+                            tmp = tmp + spec[ik1,ik2,ik3]**2
+            out[il] = tmp
     return out
 
 @cython.boundscheck(False)

@@ -11,13 +11,13 @@ class PolyBin3D():
     - boxsize: 3D box-size (with 1 or 3 components)
     - gridsize: Number of Fourier modes per dimension (with 1 or 3 components)
     - Pk (optional): Fiducial power spectrum monopole (including noise), in ordering {k, P_0(k)}. This is used for the ideal estimators and for creating synthetic realizations for the optimal estimators. If unset, unit power will be assumed.
-    - boxcenter (optional): Center of the 3D box (with 1 or 3 components). Default: [0,0,0]
+    - boxcenter (optional): Center of the 3D box (with 1 or 3 components). Default: None ( = [0,0,0])
     - pixel_window (optional): Which voxel window function to use. See self.pixel_windows for a list of options (including "none"). Default: "none"
     - backend (optional): Which backend to use to compute FFTs. Options: "mkl" [requires mkl_fft].   
     - nthreads (optional): How many CPUs to use for the CPU calculations. Default: maximum available.
     - sightline (optional): Whether to assume local or global line-of-sight. Options: "local" [relative to each pair], "global" [relative to z-axis]. Default: "global"
     """
-    def __init__(self, boxsize, gridsize, Pk=None, boxcenter=[0,0,0], pixel_window='none', backend='mkl', nthreads=None, sightline='global'):
+    def __init__(self, boxsize, gridsize, Pk=None, boxcenter=None, pixel_window='none', backend='mkl', nthreads=None, sightline='global'):
         
         # Load attributes
         self.backend = backend
@@ -35,7 +35,9 @@ class PolyBin3D():
             self.boxsize = np.asarray(boxsize)
         
         # Check and load box center
-        if type(boxcenter)==float:
+        if boxcenter is None:
+            self.boxcenter = np.zeros(3)
+        elif type(boxcenter)==float:
             self.boxcenter = np.asarray([boxcenter,boxcenter,boxcenter])
         else:
             assert len(boxcenter)==3, "Need to specify x, y, z boxcenter"
@@ -61,7 +63,7 @@ class PolyBin3D():
         
         # Load fiducial spectra
         if (np.asarray(Pk)==None).all():
-            k_tmp = np.arange(np.min(self.kF)/10.,np.max(self.kNy)*2,np.min(self.kF)/10.)
+            k_tmp = np.arange(0.,np.max(self.kNy)*2,np.min(self.kF)/10.)
             self.Pfid = np.asarray([k_tmp, 1.+0.*k_tmp])
         else:
             assert len(Pk)==2, "Pk should contain k and P_0(k) columns"
@@ -70,7 +72,7 @@ class PolyBin3D():
 
         # Compute the real-space coordinate grid
         if self.sightline=='local': # not used else!
-            offset = self.boxcenter+0.5*self.boxsize/self.gridsize
+            offset = self.boxcenter #+0.5*self.boxsize/self.gridsize # removing this for consistency with pypower
             r_arrs = [np.fft.fftshift(np.arange(-self.gridsize[i]//2,self.gridsize[i]//2))*self.boxsize[i]/self.gridsize[i]+offset[i] for i in range(3)]
             self.r_grids = np.meshgrid(*r_arrs,indexing='ij')
         print("\n# Dimensions: [%.2e, %.2e, %.2e] Mpc/h"%(self.boxsize[0],self.boxsize[1],self.boxsize[2]))
@@ -166,13 +168,16 @@ class PolyBin3D():
             raise Exception("Only 'fftw' and 'jax' backends are currently implemented!")
         
         # Apply Pk to grid
-        self.Pk0_grid = scipy.interpolate.interp1d(self.Pfid[0], self.Pfid[1], bounds_error=False)(self.modk_grid)
+        self.Pk0_grid = scipy.interpolate.interp1d(self.Pfid[0], self.Pfid[1], bounds_error=False, fill_value=0.)(self.modk_grid)
         
         # Invert Pk
         self.invPk0_grid = np.zeros(self.gridsize, dtype=np.float64)
         good_filter = (self.Pk0_grid!=0)&np.isfinite(self.Pk0_grid)
         self.invPk0_grid[good_filter] = 1./self.Pk0_grid[good_filter] 
         self.Pk0_grid[~np.isfinite(self.Pk0_grid)] = 0.
+        # Keep zero mode
+        self.invPk0_grid[self.modk_grid==0] = 1.
+        self.Pk0_grid[self.modk_grid==0] = 1.
         
         # Counter for FFTs
         self.n_FFTs_forward = 0
@@ -194,7 +199,7 @@ class PolyBin3D():
             return self.fftw_out.copy()
         
         elif self.backend=='mkl':
-             # Ensure the data is contiguous to avoid unnecessary overhead.
+            # Ensure the data is contiguous to avoid unnecessary overhead.
             data_contig = np.ascontiguousarray(_input_rmap)
             
             # Perform the FFT on the specified axes.

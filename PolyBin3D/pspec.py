@@ -102,8 +102,6 @@ class PSpec():
             self.Ylm_real = utils.compute_real_harmonics(np.asarray(self.base.r_grids), self.lmax, self.odd_l, self.base.nthreads)
             self.Ylm_fourier = utils.compute_real_harmonics(np.asarray(self.base.k_grids), self.lmax, self.odd_l, self.base.nthreads)
         
-        print('check we use all the utils functions')
-        
     def get_ks(self):
         """
         Return a list of the central k-values for each power spectrum bin.
@@ -254,7 +252,7 @@ class PSpec():
                     Pk4_grid = interp1d(Pk_cov[0], Pk_cov[3], bounds_error=False, fill_value=0.)(self.base.modk_grid)    
             
         # Compute new spherical harmonics if necessary
-        if compute_theory:
+        if compute_theory and self.base.sightline=='local':
             assert not compute_cov
             if (not hasattr(self,'Ylm_real_theory') and not hasattr(self,'Ylm_fourier_theory')):
                 if (lmax_theory>self.lmax) or (odd_l_theory!=self.odd_l):
@@ -465,10 +463,10 @@ class PSpec():
             # Assemble matrix for higher-order multipoles
             if self.base.sightline=='global':
                 for li in range(1,self.Nl):
-                    fisher_matrix[row, li*self.Nk+ki] += 0.5*utils.bin_integrate_cross_all_l(Ainv_map_fourier,Q,self.base.modk_grid, self.base.muk_grid, li*2, self.k_bins, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2
+                    fisher_matrix[row, li*self.Nk:(li+1)*self.Nk] += 0.5*utils.bin_integrate_cross_all_l(Ainv_map_fourier,Q,self.base.modk_grid, self.base.muk_grid, li*2, self.k_bins, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2
                 if compute_theory: 
                     for li in range(1,Nl_theory):
-                        binning_matrix[row, li*Nk_th+ki] += 0.5*utils.bin_integrate_cross_all_l(Ainv_map_fourier,Q,self.base.modk_grid, self.base.muk_grid, li*2, k_bins_theory, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2
+                        binning_matrix[row, li*Nk_th:(li+1)*Nk_th] += 0.5*utils.bin_integrate_cross_all_l(Ainv_map_fourier,Q,self.base.modk_grid, self.base.muk_grid, li*2, k_bins_theory, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2
 
             elif self.base.sightline=='local':
                 # Assemble Fisher matrix
@@ -520,7 +518,7 @@ class PSpec():
             
                 # Multiply by L_ell(mu) and add to bins
                 for ki in range(self.Nk):
-                    add_to_matrix(li*self.Nk+ki, apply_filter_dagger(utils.filt_map_full_l(SinvP_map_fourier, self.base.modk_grid, li*2, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads), real=False))
+                    add_to_matrix(li*self.Nk+ki, apply_filter_dagger(utils.filt_map_full_l(SinvP_map_fourier, self.base.modk_grid, self.base.muk_grid, li*2, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads), real=False))
 
             else:
                 if verb: print("Computing l = %d output"%((2-self.odd_l)*li))
@@ -598,7 +596,7 @@ class PSpec():
                 
                 # Compute legendre-weighted integral
                 for ki in range(self.Nk):
-                    shot[li*self.Nk+ki,:] = 0.5*utils.bin_integrate_cross_l(Sinv_a, Sinv_N_Ainv_a, self.base.modk_grid, self.base.muk_grid, 2*li, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
+                    shot[li*self.Nk+ki] = 0.5*utils.bin_integrate_cross_l(Sinv_a, Sinv_N_Ainv_a, self.base.modk_grid, self.base.muk_grid, 2*li, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
             
             else:
                 
@@ -753,7 +751,7 @@ class PSpec():
                     for lm_ind in range(len(self.Ylm_real[l_factor*li])):
                         map_lm = utils.prod_map_real(Sinv_data_real,self.Ylm_real[l_factor*li][lm_ind],self.base.nthreads)
                         utils.prod_map_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[l_factor*li][lm_ind], lm_sum, self.base.nthreads)
-                
+                        
                     # Ensure output is real
                     if (filtering=='Sinv' and self.odd_l and li%2==1):
                         lm_sum *= -1.0j
@@ -818,14 +816,13 @@ class PSpec():
             # Iterate over fields, assembling Fisher matrix diagonal
             for la in range(self.Nl_even):
                 for lb in range(self.Nl_even):
-                    for bin1 in range(self.Nk):
-                        fish[la*self.Nk+bin1,lb*self.Nk+bin1] = 0.5*utils.bin_integrate_real_ll(invPk0_grid, self.base.modk_grid, self.base.muk_grid, 2*la, 2*lb, self.k_bins[bin1], self.k_bins[bin1+1], self.base.nthreads)
-                    
+                    fish[la*self.Nk:(la+1)*self.Nk,lb*self.Nk:(lb+1)*self.Nk] = np.diag(0.5*utils.bin_integrate_real_ll_vec(invPk0_grid, self.base.modk_grid, self.base.muk_grid, 2*la, 2*lb, self.k_bins, self.base.nthreads))
+            
         else:
             # Replace Int L_ell(k.n) L_ell'(k.n) by 1/(2 ell + 1) Kronecker[ell, ell']
+            fish_diag = 0.5*utils.bin_integrate_real_vec(invPk0_grid, self.base.modk_grid, self.k_bins, self.base.nthreads)
             for la in range(self.Nl_even):
-                for bin1 in range(self.Nk):
-                    fish[la*self.Nk+bin1,la*self.Nk+bin1] = 0.5/(4.*la+1.)*utils.bin_integrate_real(invPk0_grid, self.base.modk_grid, self.k_bins[bin1], self.k_bins[bin1+1], self.base.nthreads)
+                fish[la*self.Nk:(la+1)*self.Nk,la*self.Nk:(la+1)*self.Nk] = np.diag(fish_diag)/(4.*la+1.)
                     
         # Save attributes and return                     
         self.fish_ideal = fish
