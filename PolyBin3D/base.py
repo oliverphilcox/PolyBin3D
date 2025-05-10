@@ -12,12 +12,15 @@ class PolyBin3D():
     - gridsize: Number of Fourier modes per dimension (with 1 or 3 components)
     - Pk (optional): Fiducial power spectrum monopole (including noise), in ordering {k, P_0(k)}. This is used for the ideal estimators and for creating synthetic realizations for the optimal estimators. If unset, unit power will be assumed.
     - boxcenter (optional): Center of the 3D box (with 1 or 3 components). Default: None ( = [0,0,0])
-    - pixel_window (optional): Which voxel window function to use. See self.pixel_windows for a list of options (including "none"). Default: "none"
+    - pixel_window (optional): Which voxel window function to deconvolve from the data. See self.pixel_windows for a list of options (including "none"). Default: "none"
     - backend (optional): Which backend to use to compute FFTs. Options: "mkl" [requires mkl_fft].   
     - nthreads (optional): How many CPUs to use for the CPU calculations. Default: maximum available.
     - sightline (optional): Whether to assume local or global line-of-sight. Options: "local" [relative to each pair], "global" [relative to z-axis]. Default: "global"
     """
-    def __init__(self, boxsize, gridsize, Pk=None, boxcenter=None, pixel_window='none', backend='mkl', nthreads=None, sightline='global'):
+    def __init__(self, boxsize, gridsize, Pk=None, boxcenter=None, pixel_window='none', backend='mkl', nthreads=None, sightline='global', real_fft=False):
+        
+        self.real_fft = real_fft
+        print('remove real_fft!')
         
         # Load attributes
         self.backend = backend
@@ -80,11 +83,19 @@ class PolyBin3D():
         print("# Line-of-sight: %s"%self.sightline)
         
         # Compute the Fourier-space coordinate grid
-        k_arrs = [np.fft.fftshift(np.arange(-self.gridsize[i]//2,self.gridsize[i]//2))*self.kF[i] for i in range(3)]
+        if self.real_fft:
+            k_arrs = [np.fft.fftshift(np.arange(-self.gridsize[i]//2,self.gridsize[i]//2))*self.kF[i] for i in range(2)]
+            k_arrs += [np.arange(0,self.gridsize[2]//2+1)*self.kF[2]]
+        else:
+            k_arrs = [np.fft.fftshift(np.arange(-self.gridsize[i]//2,self.gridsize[i]//2))*self.kF[i] for i in range(3)]
         self.k_grids = np.meshgrid(*k_arrs,indexing='ij')
         self.modk_grid = np.sqrt(self.k_grids[0]**2+self.k_grids[1]**2+self.k_grids[2]**2)
+        if self.real_fft:
+            self.degeneracy_factor = np.asarray(1.+(self.k_grids[2]>0), dtype=np.float64)
+        else:
+            self.degeneracy_factor = None
         
-        print("# Fourier-space grid: [%d, %d, %d]"%(self.gridsize[0],self.gridsize[1],self.gridsize[2])) 
+        print("# Cartesian grid: [%d, %d, %d]"%(self.gridsize[0],self.gridsize[1],self.gridsize[2])) 
         print("# Fundamental frequency: [%.4f, %.4f, %.4f] h/Mpc"%(self.kF[0],self.kF[1],self.kF[2]))
         print("# Nyquist frequency: [%.3f, %.3f, %.3f] h/Mpc"%(self.kNy[0],self.kNy[1],self.kNy[2]))
 
@@ -93,32 +104,7 @@ class PolyBin3D():
         assert self.pixel_window in self.pixel_windows, "Unknown pixel window '%s' supplied!"%pixel_window
         print("# Pixel window: %s"%self.pixel_window)
         if self.pixel_window!='none':
-            def _pixel_window_1d(k):
-                """Pixel window functions including first-order alias corrections (copied from nbodykit)"""
-                if self.pixel_window == 'cic':
-                    s = np.sin(k)**2.
-                    v = (1.-2./3.*s)**0.5
-                elif self.pixel_window == 'tsc':
-                    s = np.sin(k)**2.
-                    v = (1.-s+2./15*s**2.)**0.5
-                elif self.pixel_window=='pcs':
-                    s = np.sin(k)**2.
-                    v = (1.-4./3.*s+2./5.*s**2-4./315.*s**3)**0.5
-                elif self.pixel_window == 'interlaced-cic':
-                    s = np.sinc(k/np.pi)
-                    v = np.ones_like(s)
-                    v[s!=0.] = s[s!=0.]**2.
-                elif self.pixel_window == 'interlaced-tsc':
-                    s = np.sinc(k/np.pi)
-                    v = s**3.
-                elif self.pixel_window == 'interlaced-pcs':
-                    s = np.sinc(k/np.pi)
-                    v = s**4.
-                else:
-                    raise Exception("Unkown window function '%s' supplied!"%self.pixel_window)
-                return v
-
-            windows_1d = [_pixel_window_1d(np.pi/self.gridsize[i]*k_arrs[i]/self.kF[i]) for i in range(3)]
+            windows_1d = [self._pixel_window_1d(np.pi/self.gridsize[i]*k_arrs[i]/self.kF[i]) for i in range(3)]
             self.pixel_window_grid = np.asarray(np.meshgrid(*windows_1d,indexing='ij')).prod(axis=0)
         
         # Define angles polynomials [for generating grids and weighting]
@@ -126,52 +112,17 @@ class PolyBin3D():
             sight_vector = np.asarray([0.,0.,1.])
         else:
             sight_vector = self.boxcenter/np.sqrt(np.sum(self.boxcenter**2))
-        self.muk_grid = np.zeros(self.gridsize)
+        self.muk_grid = np.zeros(self.modk_grid.shape)
         self.muk_grid[self.modk_grid!=0] = np.sum(sight_vector[:,None]*np.asarray(self.k_grids)[:,self.modk_grid!=0],axis=0)/self.modk_grid[self.modk_grid!=0]
         
-        # Set up relevant FFT modules
-        if self.backend=='fftw':
-            import pyfftw
-
-            # Set-up FFT arrays
-            self.fftw_in  = pyfftw.empty_aligned(self.gridsize,dtype='complex128')
-            self.fftw_out = pyfftw.empty_aligned(self.gridsize,dtype='complex128')
-
-            # Preallocate memory-aligned arrays.
-            self.fftw_plan = pyfftw.FFTW(self.fftw_in, self.fftw_out, axes=(0, 1, 2),direction='FFTW_FORWARD',flags=('FFTW_MEASURE',),threads=self.nthreads)
-            self.ifftw_plan = pyfftw.FFTW(self.fftw_in, self.fftw_out, axes=(0, 1, 2),direction='FFTW_BACKWARD',flags=('FFTW_MEASURE',),threads=self.nthreads)
-
-            # Run a warm-up transform to gain wisdom
-            self.fftw_in[:] = np.ones(self.gridsize,dtype='complex128')
-            self.fftw_plan()
-            self.ifftw_plan()
-            
-            self.np = np
-            print('# Using FFTW backend')
-        
-        elif self.backend=='mkl':
-            import mkl_fft
-            self.mkl_fft = mkl_fft
-            
-            self.np = np
-            print('# Using MKL backend')
-            
-        elif self.backend=='jax':
-            import jax
-            import jax.numpy as jnp
-            jax.config.update("jax_enable_x64", False)
-            self.np = jnp
-            self.jax = jax
-            print('# Using JAX backend')
-            
-        else:
-            raise Exception("Only 'fftw' and 'jax' backends are currently implemented!")
+        # Set-up the FFT calculations
+        self._fft_setup()
         
         # Apply Pk to grid
         self.Pk0_grid = scipy.interpolate.interp1d(self.Pfid[0], self.Pfid[1], bounds_error=False, fill_value=0.)(self.modk_grid)
         
         # Invert Pk
-        self.invPk0_grid = np.zeros(self.gridsize, dtype=np.float64)
+        self.invPk0_grid = np.zeros(self.modk_grid.shape, dtype=np.float64)
         good_filter = (self.Pk0_grid!=0)&np.isfinite(self.Pk0_grid)
         self.invPk0_grid[good_filter] = 1./self.Pk0_grid[good_filter] 
         self.Pk0_grid[~np.isfinite(self.Pk0_grid)] = 0.
@@ -183,6 +134,10 @@ class PolyBin3D():
         self.n_FFTs_forward = 0
         self.n_FFTs_reverse = 0
         
+        # Define cython utility class
+        self.integrator = utils.IntegrationUtils(self.modk_grid, self.real_fft, self.nthreads, degk=self.degeneracy_factor, muk=self.muk_grid)
+        self.map_utils = utils.MapUtils(self.modk_grid, self.gridsize, self.nthreads, muk=self.muk_grid)
+        
     # Basic FFTs
     def to_fourier(self, _input_rmap):
         """Transform from real- to Fourier-space."""
@@ -190,7 +145,6 @@ class PolyBin3D():
         assert type(_input_rmap[0,0,0])==np.float64
 
         if self.backend=='fftw':
-            
             # Load-in grid
             np.copyto(self.fftw_in, _input_rmap)
             # Perform FFT
@@ -199,13 +153,13 @@ class PolyBin3D():
             return self.fftw_out.copy()
         
         elif self.backend=='mkl':
-            # Ensure the data is contiguous to avoid unnecessary overhead.
-            data_contig = np.ascontiguousarray(_input_rmap)
-            
-            # Perform the FFT on the specified axes.
-            return self.mkl_fft.fftn(data_contig, axes=(0,1,2), overwrite_x=False)        
+            if self.real_fft:
+                return self.mkl_fft.rfftn(_input_rmap, axes=(0,1,2))        
+            else:
+                return self.mkl_fft.fftn(_input_rmap, axes=(0,1,2))        
 
         elif self.backend=='jax':
+            if self.real_fft: raise Exception()
             arr = self.np.fft.fftn(_input_rmap,axes=(-3,-2,-1))
             return arr
         
@@ -216,71 +170,97 @@ class PolyBin3D():
 
         if self.backend=='fftw':
             # Load-in grid
-            np.copyto(self.fftw_in, _input_kmap)
+            np.copyto(self.fftw_out, _input_kmap)
             # Perform FFT
-            self.ifftw_plan(self.fftw_in,self.fftw_out)
+            self.ifftw_plan(self.fftw_out,self.fftw_in)
             # Return output
-            return np.asarray(self.fftw_out.copy().real, order='C')
-        
+            if self.real_fft:
+                return self.fftw_in.copy()
+            else:
+                return np.asarray(self.fftw_in.copy().real, order='C')
+            
         elif self.backend=='mkl':
-            # Ensure the data is contiguous
-            data_contig = np.ascontiguousarray(_input_kmap)
-            # Perform FFT
-            return np.asarray(self.mkl_fft.ifftn(data_contig, axes=(0,1,2), overwrite_x=False).real, order='C')     
+            if self.real_fft:
+                return self.mkl_fft.irfftn(_input_kmap, axes=(0,1,2))
+            else:
+                return np.asarray(self.mkl_fft.ifftn(_input_kmap, axes=(0,1,2)).real, order='C')     
 
         elif self.backend=='jax':
             arr = self.np.fft.ifftn(_input_kmap,axes=(-3,-2,-1))
             return self.np.asarray(arr.real, order='C')
 
-    # Spherical harmonic functions
-    def _safe_divide(self, x, y):
-        """Divide two arrays, replacing any NaN values with zero."""
-        out = np.zeros_like(y)
-        out[y!=0] = x[y!=0]/y[y!=0]
-        return out
+    def _pixel_window_1d(self, k):
+        """Pixel window functions including first-order alias corrections (copied from nbodykit)"""
+        if self.pixel_window == 'cic':
+            s = np.sin(k)**2.
+            v = (1.-2./3.*s)**0.5
+        elif self.pixel_window == 'tsc':
+            s = np.sin(k)**2.
+            v = (1.-s+2./15*s**2.)**0.5
+        elif self.pixel_window=='pcs':
+            s = np.sin(k)**2.
+            v = (1.-4./3.*s+2./5.*s**2-4./315.*s**3)**0.5
+        elif self.pixel_window == 'interlaced-cic':
+            s = np.sinc(k/np.pi)
+            v = np.ones_like(s)
+            v[s!=0.] = s[s!=0.]**2.
+        elif self.pixel_window == 'interlaced-tsc':
+            s = np.sinc(k/np.pi)
+            v = s**3.
+        elif self.pixel_window == 'interlaced-pcs':
+            s = np.sinc(k/np.pi)
+            v = s**4.
+        else:
+            raise Exception("Unknown window function '%s' supplied!"%self.pixel_window)
+        return v
 
-    def _compute_real_harmonics(self, coordinates, lmax, odd_l=False):
-        """Compute the real spherical harmonics on the coordinate grid. These are hard-coded for speed up to lmax = 4.
+    def _fft_setup(self, verb=True):
+        """Set-up the relevant FFT modules"""
+        
+        # Set up relevant FFT modules
+        if self.backend=='fftw':
+            import pyfftw
 
-        Note that we drop a factor of Sqrt[(2l+1)/4pi] for convenience, and compute odd harmonics only if odd_l=True"""
-        assert lmax>=1
+            # Set-up FFT arrays
+            if self.real_fft:
+                self.fftw_in  = pyfftw.empty_aligned(self.gridsize,dtype='float64')
+                self.fftw_out = pyfftw.empty_aligned([self.gridsize[0],self.gridsize[1],self.gridsize[2]//2+1],dtype='complex128')
+            else:
+                self.fftw_in  = pyfftw.empty_aligned(self.gridsize,dtype='complex128')
+                self.fftw_out = pyfftw.empty_aligned(self.gridsize,dtype='complex128')
 
-        # Define coordinates (with unit norm)
-        norm = np.sqrt(coordinates[0]**2+coordinates[1]**2+coordinates[2]**2)
-        xh = self._safe_divide(coordinates[0], norm)
-        yh = self._safe_divide(coordinates[1], norm)
-        zh = self._safe_divide(coordinates[2], norm)
+            # Preallocate memory-aligned arrays.
+            self.fftw_plan = pyfftw.FFTW(self.fftw_in, self.fftw_out, axes=(0, 1, 2), direction='FFTW_FORWARD', flags=('FFTW_MEASURE',), threads=self.nthreads)
+            self.ifftw_plan = pyfftw.FFTW(self.fftw_out, self.fftw_in, axes=(0, 1, 2), direction='FFTW_BACKWARD', flags=('FFTW_MEASURE',), threads=self.nthreads)
 
-        Ylms = {}
-        if (odd_l and lmax>=1):
-            Ylms[1] = np.asarray([yh,
-                                    zh,
-                                    xh],dtype=np.float64)
-        if lmax>=2:
-            Ylms[2] = np.asarray([6.*xh*yh*np.sqrt(1./12.),
-                                    3.*yh*zh*np.sqrt(1./3.),
-                                    (zh**2-xh**2/2.-yh**2/2.),
-                                    3.*xh*zh*np.sqrt(1./3.),
-                                    (3*xh**2-3*yh**2)*np.sqrt(1./12.)],dtype=np.float64)
-        if (odd_l and lmax>=3):
-            Ylms[3] = np.asarray([(45.*xh**2*yh-15.*yh**3.)*np.sqrt(1./360.),
-                                    (30.*xh*yh*zh)*np.sqrt(1./60.),
-                                    (-1.5*xh**2*yh-1.5*yh**3+6.*yh*zh**2)*np.sqrt(1./6.),
-                                    (-1.5*xh**2*zh-1.5*yh**2*zh+zh**3),
-                                    (-1.5*xh**3-1.5*xh*yh**2+6.*xh*zh**2)*np.sqrt(1./6.),
-                                    (15.*xh**2*zh-15.*yh**2*zh)*np.sqrt(1./60.),
-                                    (15.*xh**3-45.*xh*yh**2)*np.sqrt(1./360.)],dtype=np.float64)
-        if lmax>=4:
-            Ylms[4] = np.asarray([(420.*xh**3*yh-420.*xh*yh**3)*np.sqrt(1./20160.),
-                                    (315.*xh**2*yh*zh-105.*yh**3*zh)*np.sqrt(1./2520.),
-                                    (-15.*xh**3*yh-15.*xh*yh**3+90.*xh*yh*zh**2)*np.sqrt(1./180.),
-                                    (-7.5*xh**2*yh*zh-7.5*yh**3*zh+10.*yh*zh**3)*np.sqrt(1./10.),
-                                    35./8.*zh**4.-15./4.*zh**2.+3./8.,
-                                    (-15./2.*xh**3*zh-15.*xh*yh**2*zh/2.+10.*xh*zh**3)*np.sqrt(1./10.),
-                                    (-15./2.*xh**4+45.*xh**2*zh**2+15./2.*yh**4.-45.*yh**2.*zh**2)*np.sqrt(1./180.),
-                                    (105.*xh**3*zh-315.*xh*yh**2*zh)*np.sqrt(1./2520.),
-                                    (105.*xh**4-630.*xh**2*yh**2+105.*yh**4)*np.sqrt(1./20160.)],dtype=np.float64)
-        return Ylms
+            # Run a warm-up transform to gain wisdom
+            if self.real_fft:
+                self.fftw_in[:] = np.ones(self.gridsize,dtype='float64')
+            else:
+                self.fftw_in[:] = np.ones(self.gridsize,dtype='complex128')
+            self.fftw_plan()
+            self.ifftw_plan()
+            
+            self.np = np
+            if verb: print('# Using FFTW backend')
+        
+        elif self.backend=='mkl':
+            import mkl_fft
+            self.mkl_fft = mkl_fft
+            
+            self.np = np
+            if verb: print('# Using MKL backend')
+            
+        elif self.backend=='jax':
+            import jax
+            import jax.numpy as jnp
+            jax.config.update("jax_enable_x64", False)
+            self.np = jnp
+            self.jax = jax
+            if verb: print('# Using JAX backend')
+            
+        else:
+            raise Exception("Only 'fftw' and 'jax' backends are currently implemented!")
 
     # Gaussian random field routines
     def generate_data(self, seed=None, Pk_input=[], output_type='real', include_pixel_window=True):
@@ -295,32 +275,77 @@ class PolyBin3D():
         # Define seed
         if seed!=None:
             np.random.seed(seed)
-
-        # Define input power spectrum on the k-space grid
-        if len(Pk_input)==0:
-            Pk_grid = self.Pk0_grid
-        else:
-            assert len(np.asarray(Pk_input).shape)==2, "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
-            assert len(Pk_input) in [2,3,4], "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
             
-            Pk_grid = scipy.interpolate.interp1d(Pk_input[0], Pk_input[1], bounds_error=False, fill_value=0.)(self.modk_grid)
-            if len(Pk_input)>2:
-                Pk_grid += scipy.special.legendre(2)(self.muk_grid)*scipy.interpolate.interp1d(Pk_input[0], Pk_input[2], bounds_error=False, fill_value=0.)(self.modk_grid)
-            if len(Pk_input)>3:
-                Pk_grid += scipy.special.legendre(4)(self.muk_grid)*scipy.interpolate.interp1d(Pk_input[0], Pk_input[3], bounds_error=False, fill_value=0.)(self.modk_grid)
-        
-        # Generate random Gaussian maps with input P(k)
-        rand_fourier = (np.random.randn(*self.gridsize)+1.0j*np.random.randn(*self.gridsize))*np.sqrt(Pk_grid)
-        rand_fourier[self.modk_grid==0] = 0.
+        if self.real_fft:
+            print('fix this!')
+            # Generate the power spectrum on a complex grid then make real afterwards
 
-        # Add pixel window function to delta(k)
-        if self.pixel_window!='none' and include_pixel_window:
-            rand_fourier *= self.pixel_window_grid
+            k_arrs = [np.fft.fftshift(np.arange(-self.gridsize[i]//2,self.gridsize[i]//2))*self.kF[i] for i in range(3)]
+            k_grids = np.meshgrid(*k_arrs,indexing='ij')
+            modk_grid_all = np.sqrt(k_grids[0]**2+k_grids[1]**2+k_grids[2]**2)     
+            if self.sightline=='global':
+                sight_vector = np.asarray([0.,0.,1.])
+            else:
+                sight_vector = self.boxcenter/np.sqrt(np.sum(self.boxcenter**2))
+            muk_grid_all = np.zeros(modk_grid_all.shape)
+            muk_grid_all[modk_grid_all!=0] = np.sum(sight_vector[:,None]*np.asarray(k_grids)[:,modk_grid_all!=0],axis=0)/modk_grid_all[modk_grid_all!=0]
+                    
+            # Define input power spectrum on the k-space grid
+            if len(Pk_input)==0:
+                Pk_grid = scipy.interpolate.interp1d(self.Pfid[0], self.Pfid[1], bounds_error=False, fill_value=0.)(modk_grid_all)
+            else:
+                assert len(np.asarray(Pk_input).shape)==2, "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
+                assert len(Pk_input) in [2,3,4], "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
+                
+                Pk_grid = scipy.interpolate.interp1d(Pk_input[0], Pk_input[1], bounds_error=False, fill_value=0.)(modk_grid_all)
+                if len(Pk_input)>2:
+                    Pk_grid += scipy.special.legendre(2)(muk_grid_all)*scipy.interpolate.interp1d(Pk_input[0], Pk_input[2], bounds_error=False, fill_value=0.)(modk_grid_all)
+                if len(Pk_input)>3:
+                    Pk_grid += scipy.special.legendre(4)(muk_grid_all)*scipy.interpolate.interp1d(Pk_input[0], Pk_input[3], bounds_error=False, fill_value=0.)(modk_grid_all)
+            
+            # Generate random Gaussian maps with input P(k)
+            rand_fourier = (np.random.randn(*self.gridsize)+1.0j*np.random.randn(*self.gridsize))*np.sqrt(Pk_grid)
+            rand_fourier[modk_grid_all==0] = 0.
+            
+            # Add pixel window function to delta(k)
+            if self.pixel_window!='none' and include_pixel_window:
+                windows_1d = [self._pixel_window_1d(np.pi/self.gridsize[i]*k_arrs[i]/self.kF[i]) for i in range(3)]
+                window_grid = np.asarray(np.meshgrid(*windows_1d,indexing='ij')).prod(axis=0)
+                rand_fourier *= window_grid
+                
+            # Force map to be real and normalize
+            self.real_fft = False
+            self._fft_setup(verb=False)
+            rand_real = self.to_real(rand_fourier)
+            self.real_fft = True
+            self._fft_setup(verb=False)
+            rand_real *= self.gridsize.prod()/np.sqrt(self.volume)
+        else:
+            # Define input power spectrum on the k-space grid
+            if len(Pk_input)==0:
+                Pk_grid = self.Pk0_grid
+            else:
+                assert len(np.asarray(Pk_input).shape)==2, "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
+                assert len(Pk_input) in [2,3,4], "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
+                
+                Pk_grid = scipy.interpolate.interp1d(Pk_input[0], Pk_input[1], bounds_error=False, fill_value=0.)(self.modk_grid)
+                if len(Pk_input)>2:
+                    Pk_grid += scipy.special.legendre(2)(self.muk_grid)*scipy.interpolate.interp1d(Pk_input[0], Pk_input[2], bounds_error=False, fill_value=0.)(self.modk_grid)
+                if len(Pk_input)>3:
+                    Pk_grid += scipy.special.legendre(4)(self.muk_grid)*scipy.interpolate.interp1d(Pk_input[0], Pk_input[3], bounds_error=False, fill_value=0.)(self.modk_grid)
+            
+            # Generate random Gaussian maps with input P(k)
+            rand_fourier = (np.random.randn(*self.gridsize)+1.0j*np.random.randn(*self.gridsize))*np.sqrt(Pk_grid)
+            rand_fourier[self.modk_grid==0] = 0.
+            
+            # Add pixel window function to delta(k)
+            if self.pixel_window!='none' and include_pixel_window:
+                rand_fourier = self.map_utils.prod_fourier(rand_fourier, self.pixel_window_grid)
+            
+            # Force map to be real and normalize
+            rand_real = self.to_real(rand_fourier)
+            rand_real *= self.gridsize.prod()/np.sqrt(self.volume)
         
-        # Force map to be real and normalize
-        rand_real = self.to_real(rand_fourier)
-        rand_real *= self.gridsize.prod()/np.sqrt(self.volume)
-
         if output_type=='real': return rand_real
         else: return self.to_fourier(rand_real)
         
@@ -341,12 +366,12 @@ class PolyBin3D():
         else: input_fourier = input_data.copy()
         
         # Divide by covariance
-        Sinv_fourier = utils.prod_map(input_fourier, invPk0_grid, self.nthreads)
+        Sinv_fourier = self.map_utils.prod_fourier(input_fourier, invPk0_grid)
         
         # Optionally divide by pixel window
         if self.pixel_window!='none':
-            Sinv_fourier /= self.pixel_window_grid**2
-
+            Sinv_fourier = self.map_utils.div_fourier(self.map_utils.div_fourier(Sinv_fourier, self.pixel_window_grid), self.pixel_window_grid)
+        
         # Optionally return to map-space
         if output_type=='real': return self.to_real(Sinv_fourier)
         else: return Sinv_fourier

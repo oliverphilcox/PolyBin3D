@@ -60,29 +60,31 @@ class PSpec():
         
         # Read-in mask
         if type(mask)==type(None):
-            self.mask = np.ones(self.base.gridsize)
             self.const_mask = True
+            self.mask_mean = 1.
+            self.sq_mask_mean = 1.
             assert not self.add_GIC, "Global integral constraint cannot be used without a mask!"
             assert not self.add_RIC, "Radial integral constraint cannot be used without a mask!"
         else:
-            self.mask = mask
+            self.mask = mask.astype(np.float64)
             if type(mask_IC)!=type(None):
-                self.mask_IC = mask_IC
+                self.mask_IC = mask_IC.astype(np.float64)
             # Check if window is uniform
             if np.std(self.mask)<1e-12:
                 self.const_mask = True
+                self.mask_mean = np.mean(self.mask)
             else:
                 self.const_mask = False
+            # Compute the mean of the squared mask
+            self.sq_mask_mean = np.mean(self.mask**2)
         if self.const_mask:
             print("Mask: constant")
         else:
             print("Mask: spatially varying")
-        self.mask_mean = np.mean(self.mask)
-        self.sq_mask_mean = np.mean(self.mask**2)
         
         # Read-in shot-noise mask
         if type(mask_shot)!=type(None):
-            self.mask_shot = mask_shot
+            self.mask_shot = mask_shot.astype(np.float64)
         
         # Check integral constraints
         if self.add_GIC:
@@ -92,7 +94,7 @@ class PSpec():
             assert not self.add_GIC, "Radial integral constraint imposes global integral constraint automatically!"
             assert hasattr(self,'mask_IC'), "Need to supply mask_IC!"
             assert len(radial_bins_RIC)>0, "Radial bins need to be supplied for radial integral constraint!"
-            print("Accounting for radial integral constraint acrosss %d bins"%(len(radial_bins_RIC)-1))
+            print("Accounting for radial integral constraint across %d bins"%(len(radial_bins_RIC)-1))
             self.base.modr_grid = np.sqrt(self.base.r_grids[0]**2.+self.base.r_grids[1]**2.+self.base.r_grids[2]**2.)
             self.radial_bins_RIC = radial_bins_RIC
             
@@ -115,7 +117,8 @@ class PSpec():
         """
         Compute the numerator of the unwindowed power spectrum estimator, using the custom weighting function S^-1.
         """
-        assert data.shape == self.mask.shape, "Data must have same shape as the mask!"
+        if not self.const_mask:
+            assert data.shape == self.mask.shape, "Data must have same shape as the mask!"
 
         if self.applySinv==None:
             raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
@@ -141,12 +144,14 @@ class PSpec():
     def compute_covariance_contribution(self, seed, Pk_cov, applySinv_transpose=None, verb=False):
         """This computes the contribution to the Gaussian covariance matrix from a single GRF simulation, created internally.
         
-        This requires an input theory power spectrum, Pk_cov.
+        This requires an input theory power spectrum, Pk_cov (without shot-noise).
         
         An optional input is a function that applies (S^-1)^dagger to a map. The code will assume (S^-1)^dagger = S^-1 if this is not supplied."""
         if self.applySinv==None:
             raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
-
+        if not self.const_mask:
+            assert hasattr(self, 'mask_shot'), "Must supply mask_shot to compute shot-noise contribution"
+        
         if type(applySinv_transpose)!=type(lambda x: x):
             applySinv_transpose = self.applySinv
             print("## Caution: assuming S^-1 is Hermitian!")
@@ -212,7 +217,7 @@ class PSpec():
             else:
                 return utils.pointing_GIC(map_real, self.mask, self.mask_IC, self.base.nthreads)
         else:
-            out = utils.prod_map_real(map_real, self.mask, self.base.nthreads)
+            out = self.base.map_utils.prod_real(map_real, self.mask)
             return out
 
     def _compute_fisher(self, seed, applySinv_transpose=None, verb=False, compute_cov=False, Pk_cov=[], compute_theory=False, k_bins_theory=[], lmax_theory=None, include_wideangle=False):
@@ -272,14 +277,14 @@ class PSpec():
         def apply_xi(PdSid_map, PdSid_map_real=None, output_type='fourier'):
             """Apply xi(x,y) to a map (symmetrically). This is required for the covariance matrix."""
             if self.base.sightline=='global':
-                CPdSid_map = utils.prod_map(PdSid_map, Pk_grid, self.base.nthreads)
+                CPdSid_map = self.base.map_utils.prod_fourier(PdSid_map, Pk_grid)
                 if output_type=='fourier':
                     return CPdSid_map
                 elif output_type=='real':
                     return self.base.to_real(CPdSid_map)
             elif self.base.sightline=='local':
                 # Add l=0
-                CPdSid_map_fourier = utils.prod_map(PdSid_map, Pk0_grid, self.base.nthreads)
+                CPdSid_map_fourier = self.base.map_utils.prod_fourier(PdSid_map, Pk0_grid)
                 if len(Pk_cov)==1:
                     if output_type=='fourier': 
                         return CPdSid_map_fourier
@@ -288,31 +293,31 @@ class PSpec():
                 CPdSid_map_real = np.zeros(self.base.gridsize, dtype=np.float64)
                 if len(Pk_cov)>2:
                     # Add l=2 (first contribution)
-                    leg_map = np.zeros(self.base.gridsize, dtype=np.complex128)
+                    leg_map = np.zeros(self.base.modk_grid.shape, dtype=np.complex128)
                     for lm_ind in range(len(self.Ylm_real[2])):
-                        map_lm = utils.prod_map_real(PdSid_map_real,self.Ylm_real[2][lm_ind],self.base.nthreads)
-                        utils.prod_map_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[2][lm_ind], leg_map, self.base.nthreads)
-                    CPdSid_map_fourier += 0.5*utils.prod_map(leg_map, Pk2_grid, self.base.nthreads)
+                        map_lm = self.base.map_utils.prod_real(PdSid_map_real,self.Ylm_real[2][lm_ind])
+                        self.base.map_utils.prod_fourier_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[2][lm_ind], leg_map)
+                    CPdSid_map_fourier += 0.5*self.base.map_utils.prod_fourier(leg_map, Pk2_grid)
                     # Add l=2 (second contribution)
-                    PdSid_l_map = utils.prod_map(PdSid_map, Pk2_grid, self.base.nthreads)
-                    leg_map = np.zeros(self.base.gridsize, dtype=np.float64)
+                    PdSid_l_map = self.base.map_utils.prod_fourier(PdSid_map, Pk2_grid)
+                    leg_map = np.zeros(self.base.modk_grid.shape, dtype=np.float64)
                     for lm_ind in range(len(self.Ylm_real[2])):
-                        map_lm = utils.prod_map(PdSid_l_map,self.Ylm_fourier[2][lm_ind],self.base.nthreads)
-                        utils.prod_map_real_sum(self.base.to_real(map_lm), self.Ylm_real[2][lm_ind], leg_map, self.base.nthreads)
+                        map_lm = self.base.map_utils.prod_fourier(PdSid_l_map,self.Ylm_fourier[2][lm_ind])
+                        self.base.map_utils.prod_real_sum(self.base.to_real(map_lm), self.Ylm_real[2][lm_ind], leg_map)
                     CPdSid_map_real += 0.5*leg_map
                 if len(Pk_cov)>3:
                     # Add l=4 (first contribution)
-                    leg_map = np.zeros(self.base.gridsize, dtype=np.complex128)
+                    leg_map = np.zeros(self.base.modk_grid.shape, dtype=np.complex128)
                     for lm_ind in range(len(self.Ylm_real[4])):
-                        map_lm = utils.prod_map_real(PdSid_map_real,self.Ylm_real[4][lm_ind],self.base.nthreads)
-                        utils.prod_map_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[4][lm_ind], leg_map, self.base.nthreads)
-                    CPdSid_map_fourier += 0.5*utils.prod_map(leg_map, Pk4_grid, self.base.nthreads)
+                        map_lm = self.base.map_utils.prod_real(PdSid_map_real,self.Ylm_real[4][lm_ind])
+                        self.base.map_utils.prod_fourier_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[4][lm_ind], leg_map)
+                    CPdSid_map_fourier += 0.5*self.base.map_utils.prod_fourier(leg_map, Pk4_grid)
                     # Add l=4 (second contribution)
-                    PdSid_l_map = utils.prod_map(PdSid_map, Pk4_grid, self.base.nthreads)
-                    leg_map = np.zeros(self.base.gridsize, dtype=np.float64)
+                    PdSid_l_map = self.base.map_utils.prod_fourier(PdSid_map, Pk4_grid)
+                    leg_map = np.zeros(self.base.modk_grid.shape, dtype=np.float64)
                     for lm_ind in range(len(self.Ylm_real[4])):
-                        map_lm = utils.prod_map(PdSid_l_map,self.Ylm_fourier[4][lm_ind],self.base.nthreads)
-                        utils.prod_map_real_sum(self.base.to_real(map_lm), self.Ylm_real[4][lm_ind], leg_map, self.base.nthreads)
+                        map_lm = self.base.map_utils.prod_fourier(PdSid_l_map,self.Ylm_fourier[4][lm_ind])
+                        self.base.map_utils.prod_real_sum(self.base.to_real(map_lm), self.Ylm_real[4][lm_ind], leg_map)
                     CPdSid_map_real += 0.5*leg_map     
                 if output_type=='fourier':
                     return CPdSid_map_fourier + self.base.to_fourier(CPdSid_map_real)
@@ -327,18 +332,18 @@ class PSpec():
                 else:
                     return self.applySinv(self.apply_pointing(input_map, transpose=False), input_type='real', output_type='fourier')
             else:
-                # Apply S^-1 P Cov P^dagger S^-dagger in order to compute covariances
+                # Apply S^-1 [P Cov P^dagger + N] S^-dagger in order to compute covariances
                 if self.const_mask:
                     Sid_map = applySinv_transpose(input_map, input_type='fourier', output_type='fourier')
-                    CSid_map = apply_xi(PdSid_map, output_type='fourier')
-                    return self.mask_mean**2*self.applySinv(CSid_map, input_type='fourier', output_type='fourier')
+                    CSid_map = self.mask_mean**2*apply_xi(Sid_map, output_type='fourier') + self.mask_mean*Sid_map
+                    return self.applySinv(CSid_map, input_type='fourier', output_type='fourier')
                 else:
                     Sid_map = applySinv_transpose(input_map, input_type='real', output_type='real')
                     PdSid_map_real = self.apply_pointing(Sid_map, transpose=True)
                     PdSid_map = self.base.to_fourier(PdSid_map_real)
                     CPdSid_map = apply_xi(PdSid_map, PdSid_map_real, output_type='real')
-                    PCPdSid_map = self.apply_pointing(CPdSid_map, transpose=False)
-                    return self.applySinv(PCPdSid_map, input_type='real', output_type='fourier')
+                    CovSid_map = self.apply_pointing(CPdSid_map, transpose=False) + self.base.map_utils.prod_real(Sid_map, self.mask_shot)
+                    return self.applySinv(CovSid_map, input_type='real', output_type='fourier')
                 
         def apply_filter_dagger(input_map, real=False):
             """Apply (S^-1 P)^dagger weighting to maps. Input is either a Fourier-space map or a real-space map."""
@@ -390,7 +395,7 @@ class PSpec():
             if self.base.sightline=='local' and lmax_theory>0:
                 Ainv_map_real = self.base.to_real(Ainv_map_fourier)
                 if include_wideangle:
-                    inv_r_Ainv_map_real = utils.divide_map_real(Ainv_map_real, self.base.modr_grid, self.base.nthreads)
+                    inv_r_Ainv_map_real = self.base.map_utils.div_real(Ainv_map_real, self.base.modr_grid)
         elif (self.base.sightline=='local' and self.lmax>0):
             Ainv_map_real = self.base.to_real(Ainv_map_fourier)
         
@@ -401,10 +406,10 @@ class PSpec():
             if self.base.sightline=='local':
                 for li in range(1,self.Nl):
                     # Compute e^{-ik.x}L_l(k.x)a(x)
-                    leg_map = np.zeros(self.base.gridsize, dtype=np.complex128)
+                    leg_map = np.zeros(self.base.modk_grid.shape, dtype=np.complex128)
                     for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li])):
-                        map_lm = utils.prod_map_real(Ainv_map_real,self.Ylm_real[(2-self.odd_l)*li][lm_ind],self.base.nthreads)
-                        utils.prod_map_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[(2-self.odd_l)*li][lm_ind], leg_map, self.base.nthreads)
+                        map_lm = self.base.map_utils.prod_real(Ainv_map_real,self.Ylm_real[(2-self.odd_l)*li][lm_ind])
+                        self.base.map_utils.prod_fourier_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[(2-self.odd_l)*li][lm_ind], leg_map)
                     
                     # Add to array
                     leg_maps[li*(2-self.odd_l)] = leg_map
@@ -412,10 +417,10 @@ class PSpec():
             if self.base.sightline=='local' and not include_wideangle:
                 for li in range(1,Nl_theory):
                     # Compute e^{-ik.x}L_l(k.x)a(x)
-                    leg_map = np.zeros(self.base.gridsize, dtype=np.complex128)
+                    leg_map = np.zeros(self.base.modk_grid.shape, dtype=np.complex128)
                     for lm_ind in range(len(self.Ylm_real_theory[(2-odd_l_theory)*li])):
-                        map_lm = utils.prod_map_real(Ainv_map_real,self.Ylm_real_theory[(2-odd_l_theory)*li][lm_ind],self.base.nthreads)
-                        utils.prod_map_sum(self.base.to_fourier(map_lm), self.Ylm_fourier_theory[(2-odd_l_theory)*li][lm_ind], leg_map, self.base.nthreads)
+                        map_lm = self.base.map_utils.prod_real(Ainv_map_real,self.Ylm_real_theory[(2-odd_l_theory)*li][lm_ind])
+                        self.base.map_utils.prod_fourier_sum(self.base.to_fourier(map_lm), self.Ylm_fourier_theory[(2-odd_l_theory)*li][lm_ind], leg_map)
                     
                     # Add to array
                     leg_maps[li*(2-odd_l_theory)] = leg_map
@@ -424,18 +429,18 @@ class PSpec():
                 for l in range(1,lmax_theory+1):
                     if l%2==0:
                         # Compute e^{-ik.x}L_l(k.x)a(x)
-                        leg_map = np.zeros(self.base.gridsize, dtype=np.complex128)
+                        leg_map = np.zeros(self.base.modk_grid.shape, dtype=np.complex128)
                         for lm_ind in range(len(self.Ylm_real_theory[l])):
-                            map_lm = utils.prod_map_real(Ainv_map_real,self.Ylm_real_theory[l][lm_ind],self.base.nthreads)
-                            utils.prod_map_sum(self.base.to_fourier(map_lm), self.Ylm_fourier_theory[l][lm_ind], leg_map, self.base.nthreads)
+                            map_lm = self.base.map_utils.prod_real(Ainv_map_real,self.Ylm_real_theory[l][lm_ind])
+                            self.base.map_utils.prod_fourier_sum(self.base.to_fourier(map_lm), self.Ylm_fourier_theory[l][lm_ind], leg_map)
                     
                     else:
                         # Compute e^{-ik.x}L_l(k.x)a(x)/kx
-                        leg_map = np.zeros(self.base.gridsize, dtype=np.complex128)
+                        leg_map = np.zeros(self.base.modk_grid.shape, dtype=np.complex128)
                         for lm_ind in range(len(self.Ylm_real_theory[l])):
-                            map_lm = utils.prod_map_real(inv_r_Ainv_map_real,self.Ylm_real_theory[l][lm_ind],self.base.nthreads)
-                            utils.prod_map_sum(self.base.to_fourier(map_lm), self.Ylm_fourier_theory[l][lm_ind], leg_map, self.base.nthreads)
-                        leg_map = utils.divide_map(leg_map, self.base.modk_grid, self.base.nthreads)
+                            map_lm = self.base.map_utils.prod_real(inv_r_Ainv_map_real,self.Ylm_real_theory[l][lm_ind])
+                            self.base.map_utils.prod_fourier_sum(self.base.to_fourier(map_lm), self.Ylm_fourier_theory[l][lm_ind], leg_map)
+                        leg_map = self.base.map_utils.div_fourier(leg_map, self.base.modk_grid)
                     
                     # Add to array
                     leg_maps[l] = leg_map        
@@ -455,27 +460,36 @@ class PSpec():
         def add_to_matrix(row, Q):
             """Compute a single row of the Fisher matrix (and optionally the binning matrix), given a Q map."""
                   
+            def bin_integrate_all(input_map1, input_map2, k_bins=self.k_bins, li=0, coeff=None):
+                """Integrate two maps over all k-bins"""
+                if coeff is None:
+                    integ = self.base.integrator.cross_integrate(input_map1,input_map2, k_bins, li*2)
+                elif coeff is not None:
+                    assert li==0
+                    integ = self.base.integrator.cross_integrate_wcoeff(coeff, input_map1, input_map2, k_bins)
+                return 0.5*integ*self.base.volume/self.base.gridsize.prod()**2
+                  
             # Assemble binning matrix for the monopole
-            fisher_matrix[row, :self.Nk] += 0.5*utils.bin_integrate_cross_all(Ainv_map_fourier,Q,self.base.modk_grid, self.k_bins, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2
+            fisher_matrix[row, :self.Nk] += bin_integrate_all(Ainv_map_fourier,Q)
             if compute_theory:
-                binning_matrix[row, :Nk_th] += 0.5*utils.bin_integrate_cross_all(Ainv_map_fourier,Q,self.base.modk_grid, k_bins_theory, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2
-            
+                binning_matrix[row, :Nk_th] += bin_integrate_all(Ainv_map_fourier,Q, k_bins_theory)
+                
             # Assemble matrix for higher-order multipoles
             if self.base.sightline=='global':
                 for li in range(1,self.Nl):
-                    fisher_matrix[row, li*self.Nk:(li+1)*self.Nk] += 0.5*utils.bin_integrate_cross_all_l(Ainv_map_fourier,Q,self.base.modk_grid, self.base.muk_grid, li*2, self.k_bins, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2
+                    fisher_matrix[row, li*self.Nk:(li+1)*self.Nk] += bin_integrate_all(Ainv_map_fourier, Q, li=li)
                 if compute_theory: 
                     for li in range(1,Nl_theory):
-                        binning_matrix[row, li*Nk_th:(li+1)*Nk_th] += 0.5*utils.bin_integrate_cross_all_l(Ainv_map_fourier,Q,self.base.modk_grid, self.base.muk_grid, li*2, k_bins_theory, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2
+                        binning_matrix[row, li*Nk_th:(li+1)*Nk_th] += bin_integrate_all(Ainv_map_fourier, Q, li=li, k_bins=k_bins_theory)
 
             elif self.base.sightline=='local':
                 # Assemble Fisher matrix
                 for li in range(1,self.Nl):
                     # Note that we add a phase for odd ell
                     if (self.odd_l and li%2==1):
-                        fisher_matrix[row, li*self.Nk:(li+1)*self.Nk] += 0.5*utils.bin_integrate_cross_all(leg_maps[li*(2-self.odd_l)], 1.0j*Q, self.base.modk_grid, self.k_bins, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2
+                        fisher_matrix[row, li*self.Nk:(li+1)*self.Nk] += bin_integrate_all(leg_maps[li*(2-self.odd_l)], 1.0j*Q)
                     else:
-                        fisher_matrix[row, li*self.Nk:(li+1)*self.Nk] += 0.5*utils.bin_integrate_cross_all(leg_maps[li*(2-self.odd_l)], Q, self.base.modk_grid, self.k_bins, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2
+                        fisher_matrix[row, li*self.Nk:(li+1)*self.Nk] += bin_integrate_all(leg_maps[li*(2-self.odd_l)], Q)
 
                 if compute_theory:
                     # Assemble binning matrix
@@ -483,31 +497,31 @@ class PSpec():
                         for li in range(1,Nl_theory):
                             # Note that we add a phase for odd ell
                             if (odd_l_theory and li%2==1):
-                                binning_matrix[row, li*Nk_th:(li+1)*Nk_th] += 0.5*utils.bin_integrate_cross_all(leg_maps[li*(2-odd_l_theory)], 1.0j*Q, self.base.modk_grid, k_bins_theory, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2
+                                binning_matrix[row, li*Nk_th:(li+1)*Nk_th] += bin_integrate_all(leg_maps[li*(2-odd_l_theory)], 1.0j*Q, k_bins=k_bins_theory)
                             else:
-                                binning_matrix[row, li*Nk_th:(li+1)*Nk_th] += 0.5*utils.bin_integrate_cross_all(leg_maps[li*(2-odd_l_theory)], Q, self.base.modk_grid, k_bins_theory, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2                
+                                binning_matrix[row, li*Nk_th:(li+1)*Nk_th] += bin_integrate_all(leg_maps[li*(2-odd_l_theory)], Q, k_bins=k_bins_theory)                
                     else:
                         for l in range(1,lmax_theory+1):
                             # Compute even ell piece and add to output
                             if l%2==0:
-                                binning_matrix[row, l//2*Nk_th:(l//2+1)*Nk_th] += 0.5*utils.bin_integrate_cross_all(leg_maps[l], Q, self.base.modk_grid, k_bins_theory, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2
+                                binning_matrix[row, l//2*Nk_th:(l//2+1)*Nk_th] += bin_integrate_all(leg_maps[l], Q, k_bins=k_bins_theory)
 
                             # Compute wide-angle corrections from odd ell
                             else:
                                 kfac = derivative_coefficient(ki)
                                 # Add to ell=2
                             if l==1 and lmax_theory>=2:
-                                binning_matrix[row, Nk_th:2*Nk_th] += 0.5*utils.bin_integrate_cross_coeff_all(3.0j/5.*(3+kfac), leg_maps[l], Q, self.base.modk_grid, k_bins_theory, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2
+                                binning_matrix[row, Nk_th:2*Nk_th] += bin_integrate_all(leg_maps[l], Q, coeff=3.0j/5.*(3+kfac), k_bins=k_bins_theory)
                             # Add to ell=2,4
                             if l==3 and lmax_theory>=2:
-                                binning_matrix[row, Nk_th:2*Nk_th] += 0.5*utils.bin_integrate_cross_coeff_all(3.0j/5.*(2-kfac), leg_maps[l], Q, self.base.modk_grid, k_bins_theory, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2                                
+                                binning_matrix[row, Nk_th:2*Nk_th] += bin_integrate_all(leg_maps[l], Q, coeff=3.0j/5.*(2-kfac), k_bins=k_bins_theory)                                
                             if l==3 and lmax_theory>=4:
-                                binning_matrix[row, 2*Nk_th:3*Nk_th] += 0.5*utils.bin_integrate_cross_coeff_all(10.0j/9.*(5+kfac), leg_maps[l], Q, self.base.modk_grid, k_bins_theory, self.base.nthreads)*self.base.volume/self.base.gridsize.prod()**2                                
+                                binning_matrix[row, 2*Nk_th:3*Nk_th] += bin_integrate_all(leg_maps[l], Q, coeff=10.0j/9.*(5+kfac), k_bins=k_bins_theory)                                
             
         # Compute Q derivative for the monopole and add to output
         if verb: print("Computing l = 0 output")
         for ki in range(self.Nk):
-            kmap = utils.filt_map_full(SinvP_map_fourier, self.base.modk_grid, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
+            kmap = self.base.map_utils.fourier_filter(SinvP_map_fourier, 0, self.k_bins[ki], self.k_bins[ki+1])
             add_to_matrix(ki, apply_filter_dagger(kmap, real=False))
 
         # Repeat for higher-order multipoles
@@ -518,22 +532,22 @@ class PSpec():
             
                 # Multiply by L_ell(mu) and add to bins
                 for ki in range(self.Nk):
-                    add_to_matrix(li*self.Nk+ki, apply_filter_dagger(utils.filt_map_full_l(SinvP_map_fourier, self.base.modk_grid, self.base.muk_grid, li*2, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads), real=False))
+                    add_to_matrix(li*self.Nk+ki, apply_filter_dagger(self.base.map_utils.fourier_filter(SinvP_map_fourier, li*2, self.k_bins[ki], self.k_bins[ki+1]), real=False))
 
             else:
                 if verb: print("Computing l = %d output"%((2-self.odd_l)*li))
 
                 # First part: (-1)^l Theta_b(k) Sum_m Y_lm(k)* [S^-1.P.a]_lm(k)
-                leg_map = np.zeros(self.base.gridsize, dtype=np.complex128)
+                leg_map = np.zeros(self.base.modk_grid.shape, dtype=np.complex128)
                 for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li])):
-                    map_lm = utils.prod_map_real(SinvP_map_real,self.Ylm_real[(2-self.odd_l)*li][lm_ind],self.base.nthreads)
-                    utils.prod_map_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[(2-self.odd_l)*li][lm_ind], leg_map, self.base.nthreads)
+                    map_lm = self.base.map_utils.prod_real(SinvP_map_real,self.Ylm_real[(2-self.odd_l)*li][lm_ind])
+                    self.base.map_utils.prod_fourier_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[(2-self.odd_l)*li][lm_ind], leg_map)
                 
                 # Add to bins
                 for ki in range(self.Nk):
                     
                     # Add first part
-                    kmap = utils.filt_map_full(leg_map, self.base.modk_grid, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
+                    kmap = self.base.map_utils.fourier_filter(leg_map, 0, self.k_bins[ki], self.k_bins[ki+1])
                     if (li%2==1 and self.odd_l):
                         kmap *= -1.0j
                     Q_map = 0.5*apply_filter_dagger(kmap, real=False)
@@ -542,12 +556,12 @@ class PSpec():
                     real_map = self.base.np.zeros(self.base.gridsize,dtype=self.base.np.float64)
                     for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li])):
                         # Apply Theta_b function
-                        k_map = utils.filt_map_full(SinvP_map_fourier*self.Ylm_fourier[(2-self.odd_l)*li][lm_ind], self.base.modk_grid, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
+                        k_map = self.base.map_utils.prod_fourier_filter(SinvP_map_fourier, self.Ylm_fourier[(2-self.odd_l)*li][lm_ind], self.k_bins[ki], self.k_bins[ki+1])
                         
                         # Add to sum, being careful of real and imaginary parts
                         if (li%2==1 and self.odd_l):
                             k_map *= -1.0j
-                        utils.prod_map_sum_real(self.base.to_real(k_map), self.Ylm_real[(2-self.odd_l)*li][lm_ind], real_map, self.base.nthreads)
+                        self.base.map_utils.prod_real_sum(self.base.to_real(k_map), self.Ylm_real[(2-self.odd_l)*li][lm_ind], real_map)
                     
                     # Add second part, using the real-space map [which fills all Fourier modes, not just those in [k_min, k_max]]
                     Q_map += 0.5*apply_filter_dagger(real_map, real=True)
@@ -565,21 +579,28 @@ class PSpec():
                 
         if self.applySinv==None:
             raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
-        assert hasattr(self, 'mask_shot'), "Must supply mask_shot to compute shot-noise contribution"
+        if not self.const_mask:
+            assert hasattr(self, 'mask_shot'), "Must supply mask_shot to compute shot-noise contribution"
 
         # Initialize output
         shot = np.zeros((self.N_bins))
         
         # Define an inverse power spectrum to draw GRFs from
         PkA = [self.base.Pfid[0],1./self.base.Pfid[1]]
-        invPkA_grid = self.base.Pk0_grid
-        
+        PkA_grid = interp1d(PkA[0], PkA[1], bounds_error=False, fill_value=(PkA[1][0],PkA[1][-1]))(self.base.modk_grid)
+        invPkA_grid = np.zeros_like(PkA_grid)
+        invPkA_grid[self.base.modk_grid!=0] = 1./PkA_grid[self.base.modk_grid!=0]
+
         # Compute a random realization with known power spectrum
         a_map_fourier = self.base.generate_data(seed=seed+int(1e7), Pk_input=PkA, output_type='fourier')
         
         # Compute S^-1 N A^-1 a in Fourier-space
-        Ainv_a = self.base.applyAinv(a_map_fourier, invPk0_grid=invPkA_grid, input_type='fourier', output_type='real')
-        Sinv_N_Ainv_a = self.applySinv(utils.prod_map_real(Ainv_a, self.mask_shot, self.base.nthreads), input_type='real', output_type='fourier')
+        if self.const_mask:
+            Ainv_a_fourier = self.base.applyAinv(a_map_fourier, invPk0_grid=invPkA_grid, input_type='fourier', output_type='fourier')
+            Sinv_N_Ainv_a = self.mask_mean*self.applySinv(Ainv_a_fourier, input_type='fourier', output_type='fourier')
+        else:
+            Ainv_a = self.base.applyAinv(a_map_fourier, invPk0_grid=invPkA_grid, input_type='fourier', output_type='real')
+            Sinv_N_Ainv_a = self.applySinv(self.base.map_utils.prod_real(Ainv_a, self.mask_shot), input_type='real', output_type='fourier')
         
         # Compute S^-1 a
         Sinv_a = self.applySinv(a_map_fourier, input_type='fourier', output_type='fourier')
@@ -587,41 +608,38 @@ class PSpec():
             Sinv_a_real = self.base.to_real(Sinv_a)
         
         # Assemble monopole
-        for ki in range(self.Nk):
-            shot[ki] = 0.5*utils.bin_integrate_cross(Sinv_a, Sinv_N_Ainv_a, self.base.modk_grid, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
+        shot[:self.Nk] = 0.5*self.base.integrator.cross_integrate(Sinv_a, Sinv_N_Ainv_a, self.k_bins, 0)
         
         # Repeat for higher-order multipoles
         for li in range(1,self.Nl):
             if self.base.sightline=='global':
                 
                 # Compute legendre-weighted integral
-                for ki in range(self.Nk):
-                    shot[li*self.Nk+ki] = 0.5*utils.bin_integrate_cross_l(Sinv_a, Sinv_N_Ainv_a, self.base.modk_grid, self.base.muk_grid, 2*li, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
+                shot[li*self.Nk:(li+1)*self.Nk] = 0.5*self.base.integrator.cross_integrate(Sinv_a, Sinv_N_Ainv_a, self.k_bins, 2*li)
             
             else:
                 
                 # Compute Sum_m Y_lm(k)[S^-1 a]^*_lm(k)
-                lm_sum = np.zeros(self.base.gridsize, dtype=np.complex128)
+                lm_sum = np.zeros(self.base.modk_grid.shape, dtype=np.complex128)
                 for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li])):
-                    map_lm = utils.prod_map_real(Sinv_a_real,self.Ylm_real[(2-self.odd_l)*li][lm_ind],self.base.nthreads)
-                    utils.prod_map_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[(2-self.odd_l)*li][lm_ind], lm_sum, self.base.nthreads)
+                    map_lm = self.base.map_utils.prod_real(Sinv_a_real,self.Ylm_real[(2-self.odd_l)*li][lm_ind])
+                    self.base.map_utils.prod_fourier_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[(2-self.odd_l)*li][lm_ind], lm_sum)
                 
                 # Ensure output is real
                 if (self.odd_l and li%2==1):
                     lm_sum *= -1.0j
                 
                 # Apply binning
-                for ki in range(self.Nk):
-                    shot[li*self.Nk+ki] = 0.5*utils.bin_integrate_cross(lm_sum, Sinv_N_Ainv_a, self.base.modk_grid, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
-
+                shot[li*self.Nk:(li+1)*self.Nk] = 0.5*self.base.integrator.cross_integrate(lm_sum, Sinv_N_Ainv_a, self.k_bins, 0)
+                
         # Add FFT normalization
         shot *= self.base.volume/self.base.gridsize.prod()**2
         
         return shot
 
-    def compute_fisher(self, N_it, verb=False):
+    def compute_fisher(self, N_it, verb=False, applySinv_transpose=None):
         """
-        Compute the Fisher matrix using N_it realizations. Since the Fisher matrix is already parallelized, this is run in serial."""
+        Compute the Fisher matrix using N_it realizations. Since the calculation is already parallelized, this is run in serial."""
         
         if self.applySinv==None:
             raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
@@ -632,14 +650,13 @@ class PSpec():
         # Iterate over realizations in serial
         for seed in range(N_it):
             if seed%5==0: print("Computing Fisher contribution %d of %d"%(seed+1,N_it))
-            out = self.compute_fisher_contribution(seed, verb=verb)
-            fish += out/N_it
+            fish += self.compute_fisher_contribution(seed, applySinv_transpose=None, verb=verb)/N_it
             
         self.fish = fish
         self.inv_fish = np.linalg.inv(fish)
         
         return fish
-
+    
     def Pk_unwindowed(self, data, fish=[], shot_num=[], subtract_shotnoise=False):
         """
         Compute the unwindowed power spectrum estimator. 
@@ -694,24 +711,25 @@ class PSpec():
         if type(data[0,0,0])==np.float32: 
             data = np.asarray(data, order='C', dtype=np.float64)
 
-        # First remove the pixel window function, if present
+        # Apply filtering and transform to Fourier-space, optionally removing the pixel window function
         if self.base.pixel_window!='none':
-            data_fourier = self.base.to_fourier(data)
-            data_fourier /= self.base.pixel_window_grid
-        
-            # Apply filtering and transform to Fourier space
-            if filtering=='Sinv':
-                Sinv_data_fourier = self.applySinv(data_fourier, input_type='fourier', output_type='fourier')
-            else:
-                Sinv_data_fourier = data_fourier*self.base.invPk0_grid/np.sqrt(self.sq_mask_mean)
             
-        else:
-            # Apply filtering and transform to Fourier space
-            if filtering=='Sinv':
-                Sinv_data_fourier = self.applySinv(data, input_type='real', output_type='fourier')
-            else:
-                Sinv_data_fourier = self.base.to_fourier(data)*self.base.invPk0_grid/np.sqrt(self.sq_mask_mean)
+            # Transform to Fourier-space
+            data_fourier = self.base.to_fourier(data)/self.base.pixel_window_grid
+            
+            if filtering=='ideal':
+                # Filter by 1/P_fid
+                Sinv_data_fourier = data_fourier*self.base.invPk0_grid/np.sqrt(self.sq_mask_mean)
+            elif filtering=='Sinv':
+                Sinv_data_fourier = self.applySinv(data_fourier, input_type='fourier', output_type='fourier')
         
+        else:
+            if filtering=='ideal':
+                # Filter by 1/P_fid
+                Sinv_data_fourier = self.base.map_utils.prod_fourier(self.base.to_fourier(data),self.base.invPk0_grid)/np.sqrt(self.sq_mask_mean)
+            elif filtering=='Sinv':
+                Sinv_data_fourier = self.applySinv(data, input_type='real', output_type='fourier')
+            
         # Compute real-space map where necessary
         if (self.base.sightline=='local' and self.lmax>0):
             Sinv_data_real = self.base.to_real(Sinv_data_fourier)
@@ -721,10 +739,9 @@ class PSpec():
             Pk_out = np.zeros(self.N_bins, dtype=np.float64)
         else:
             Pk_out = np.zeros(self.Nl_even*self.Nk, dtype=np.float64)    
-       
-       # Compute monopole
-        for ki in range(self.Nk):
-            Pk_out[ki] = 0.5*utils.bin_integrate(Sinv_data_fourier, self.base.modk_grid, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
+        
+        # Compute monopole
+        Pk_out[:self.Nk] = 0.5*self.base.integrator.integrate(Sinv_data_fourier, self.k_bins, 0)
         
         # Compute higher multipoles
         if self.lmax>0:
@@ -742,23 +759,20 @@ class PSpec():
                 
                 if self.base.sightline=='global':
                     # Compute L_ell(mu)*|S^-1 d(k)|^2, integrated over k
-                    for ki in range(self.Nk):
-                        Pk_out[li*self.Nk+ki] = 0.5*utils.bin_integrate_l(Sinv_data_fourier, self.base.modk_grid, self.base.muk_grid, 2*li, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
-                
+                    Pk_out[li*self.Nk:(li+1)*self.Nk] = 0.5*self.base.integrator.integrate(Sinv_data_fourier, self.k_bins, 2*li)                
                 else:
                     # Compute Sum_m Y_lm(k)[S^-1 d](k)[S^-1 d]^*_lm(k)
-                    lm_sum = np.zeros(self.base.gridsize, dtype=np.complex128)
+                    lm_sum = np.zeros(self.base.modk_grid.shape, dtype=np.complex128)
                     for lm_ind in range(len(self.Ylm_real[l_factor*li])):
-                        map_lm = utils.prod_map_real(Sinv_data_real,self.Ylm_real[l_factor*li][lm_ind],self.base.nthreads)
-                        utils.prod_map_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[l_factor*li][lm_ind], lm_sum, self.base.nthreads)
+                        map_lm = self.base.map_utils.prod_real(Sinv_data_real,self.Ylm_real[l_factor*li][lm_ind])
+                        self.base.map_utils.prod_fourier_sum(self.base.to_fourier(map_lm), self.Ylm_fourier[l_factor*li][lm_ind], lm_sum)
                         
                     # Ensure output is real
                     if (filtering=='Sinv' and self.odd_l and li%2==1):
                         lm_sum *= -1.0j
                     
                     # Apply binning
-                    for ki in range(self.Nk):
-                        Pk_out[li*self.Nk+ki] = 0.5*utils.bin_integrate_cross(Sinv_data_fourier, lm_sum, self.base.modk_grid, self.k_bins[ki], self.k_bins[ki+1], self.base.nthreads)
+                    Pk_out[li*self.Nk:li*self.Nk+self.Nk] = 0.5*self.base.integrator.cross_integrate(Sinv_data_fourier, lm_sum, self.k_bins, 0)
         
         # Add normalization
         Pk_out *= self.base.volume/self.base.gridsize.prod()**2
@@ -773,12 +787,13 @@ class PSpec():
         
         This can compute the ideal power spectrum of simulation volumes, or, for suitably normalized input, the FKP power spectrum.
         """
-        assert data.shape == self.mask.shape, "Data must have same shape as the mask!"
+        if not self.const_mask:
+            assert data.shape == self.mask.shape, "Data must have same shape as the mask!"
         
         # Send to internal function
         return self._compute_pk_numerator(data, filtering='ideal') 
                 
-    def compute_fisher_ideal(self, discreteness_correction=True,Pk_fid='default'):
+    def compute_fisher_ideal(self, discreteness_correction=True, Pk_fid='default'):
         """This computes the idealized Fisher matrix for the power spectrum, weighting by 1/P_fid(k) within each bin. 
         
         We optionally include discreteness correction for ell>0. We can use a new fiducial power spectrum by specifying Pk_fid (which is None for unit spectrum).
@@ -792,7 +807,7 @@ class PSpec():
         
         # Define fiducial power spectrum
         if Pk_fid!='default':
-            if (np.asarray(Pk_fid)==None).all():
+            if (np.asarray(Pk_fid)==None).all() or (Pk_fid=='none'):
                 k_tmp = np.arange(np.min(self.base.kF)/10.,np.max(self.base.kNy)*2,np.min(self.base.kF)/10.)
                 Pfid = np.asarray([k_tmp, 1.+0.*k_tmp])
             else:
@@ -800,10 +815,10 @@ class PSpec():
                 Pfid = np.asarray(Pk_fid)
             
             # Apply Pk to grid
-            Pk0_grid = interp1d(Pfid[0], Pfid[1], bounds_error=False)(self.base.modk_grid)
+            Pk0_grid = interp1d(Pfid[0], Pfid[1], bounds_error=False, fill_value=0.)(self.base.modk_grid)
             
             # Invert Pk
-            invPk0_grid = np.zeros(self.base.gridsize)
+            invPk0_grid = np.zeros(self.base.modk_grid.shape)
             good_filter = (Pk0_grid!=0)&np.isfinite(Pk0_grid)
             invPk0_grid[good_filter] = 1./Pk0_grid[good_filter] 
             del Pk0_grid
@@ -816,11 +831,11 @@ class PSpec():
             # Iterate over fields, assembling Fisher matrix diagonal
             for la in range(self.Nl_even):
                 for lb in range(self.Nl_even):
-                    fish[la*self.Nk:(la+1)*self.Nk,lb*self.Nk:(lb+1)*self.Nk] = np.diag(0.5*utils.bin_integrate_real_ll_vec(invPk0_grid, self.base.modk_grid, self.base.muk_grid, 2*la, 2*lb, self.k_bins, self.base.nthreads))
-            
+                    fish[la*self.Nk:(la+1)*self.Nk,lb*self.Nk:(lb+1)*self.Nk] = np.diag(0.5*self.base.integrator.real_integrate_double(invPk0_grid, 2*la, 2*lb, self.k_bins))
+                        
         else:
             # Replace Int L_ell(k.n) L_ell'(k.n) by 1/(2 ell + 1) Kronecker[ell, ell']
-            fish_diag = 0.5*utils.bin_integrate_real_vec(invPk0_grid, self.base.modk_grid, self.k_bins, self.base.nthreads)
+            fish_diag = 0.5*self.base.integrator.real_integrate_double(invPk0_grid, 0, 0, self.k_bins)
             for la in range(self.Nl_even):
                 fish[la*self.Nk:(la+1)*self.Nk,la*self.Nk:(la+1)*self.Nk] = np.diag(fish_diag)/(4.*la+1.)
                     
