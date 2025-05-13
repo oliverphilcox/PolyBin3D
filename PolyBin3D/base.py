@@ -2,7 +2,6 @@
 ## This module contains the basic code
 
 import numpy as np, os, time, scipy
-from .cython import utils
 
 class PolyBin3D():
     """Base class for PolyBin3D.
@@ -16,17 +15,16 @@ class PolyBin3D():
     - backend (optional): Which backend to use to compute FFTs. Options: "mkl" [requires mkl_fft].   
     - nthreads (optional): How many CPUs to use for the CPU calculations. Default: maximum available.
     - sightline (optional): Whether to assume local or global line-of-sight. Options: "local" [relative to each pair], "global" [relative to z-axis]. Default: "global"
+    - real_fft (optional): Whether to use real-to-complex FFTs instead of complex-to-complex. Default: True
     """
-    def __init__(self, boxsize, gridsize, Pk=None, boxcenter=None, pixel_window='none', backend='mkl', nthreads=None, sightline='global', real_fft=False):
-        
-        self.real_fft = real_fft
-        print('remove real_fft!')
+    def __init__(self, boxsize, gridsize, Pk=None, boxcenter=None, pixel_window='none', backend='mkl', nthreads=None, sightline='global', real_fft=True):
         
         # Load attributes
         self.backend = backend
         self.nthreads = nthreads
         self.sightline = sightline
         self.pixel_window = pixel_window
+        self.real_fft = real_fft
         if self.nthreads is None:
             self.nthreads = os.cpu_count()
         
@@ -134,17 +132,51 @@ class PolyBin3D():
         self.n_FFTs_forward = 0
         self.n_FFTs_reverse = 0
         
-        # Define cython utility class
+        # Define cython utility class and empty arrays
+        if backend=='jax':
+            from . import jax_utils as utils
+        else:
+            from .cython import utils as utils
+        self.utils = utils
         self.integrator = utils.IntegrationUtils(self.modk_grid, self.real_fft, self.nthreads, degk=self.degeneracy_factor, muk=self.muk_grid)
         self.map_utils = utils.MapUtils(self.modk_grid, self.gridsize, self.nthreads, muk=self.muk_grid)
         
+    # Empty arrays
+    def real_zeros(self, size=None, numpy=False):
+        """Empty real-space array (backend-dependent)"""
+        if size==None:
+            shape = self.gridsize
+        elif type(size)==int:
+            shape = (size, self.gridsize[0], self.gridsize[1], self.gridsize[2])
+        else:
+            shape = [size[i] for i in range(len(size))]+[self.gridsize[0], self.gridsize[1], self.gridsize[2]]
+        
+        if self.backend=='jax' and not numpy:
+            return self.np.zeros(shape, dtype=self.np.float64)
+        else:
+            return np.zeros(shape, dtype=np.float64, order='C')
+        
+    def complex_zeros(self, size=None, numpy=False):
+        """Empty real-space array (backend-dependent)"""
+        if size==None:
+            shape = self.modk_grid.shape
+        elif type(size)==int:
+            shape = (size, self.modk_grid.shape[0], self.modk_grid.shape[1], self.modk_grid.shape[2])
+        else:
+            shape = [size[i] for i in range(len(size))]+[self.modk_grid.shape[0], self.modk_grid.shape[1], self.modk_grid.shape[2]]
+        
+        if self.backend=='jax' and not numpy:
+            return self.np.zeros(shape, dtype=self.np.complex128)
+        else:
+            return np.zeros(shape, dtype=np.complex128, order='C')
+    
     # Basic FFTs
     def to_fourier(self, _input_rmap):
         """Transform from real- to Fourier-space."""
         self.n_FFTs_forward += 1
-        assert type(_input_rmap[0,0,0])==np.float64
-
+        
         if self.backend=='fftw':
+            assert type(_input_rmap[0,0,0])==np.float64
             # Load-in grid
             np.copyto(self.fftw_in, _input_rmap)
             # Perform FFT
@@ -153,22 +185,24 @@ class PolyBin3D():
             return self.fftw_out.copy()
         
         elif self.backend=='mkl':
+            assert type(_input_rmap[0,0,0])==np.float64
             if self.real_fft:
                 return self.mkl_fft.rfftn(_input_rmap, axes=(0,1,2))        
             else:
                 return self.mkl_fft.fftn(_input_rmap, axes=(0,1,2))        
 
         elif self.backend=='jax':
-            if self.real_fft: raise Exception()
-            arr = self.np.fft.fftn(_input_rmap,axes=(-3,-2,-1))
-            return arr
+            if self.real_fft:
+                return self.utils.jax_rfft(_input_rmap)
+            else:
+                return self.utils.jax_fft(_input_rmap)
         
     def to_real(self, _input_kmap):
         """Transform from Fourier- to real-space."""
         self.n_FFTs_reverse += 1
-        assert type(_input_kmap[0,0,0])==np.complex128
-
+        
         if self.backend=='fftw':
+            assert type(_input_kmap[0,0,0])==np.complex128
             # Load-in grid
             np.copyto(self.fftw_out, _input_kmap)
             # Perform FFT
@@ -180,14 +214,17 @@ class PolyBin3D():
                 return np.asarray(self.fftw_in.copy().real, order='C')
             
         elif self.backend=='mkl':
+            assert type(_input_kmap[0,0,0])==np.complex128
             if self.real_fft:
                 return self.mkl_fft.irfftn(_input_kmap, axes=(0,1,2))
             else:
                 return np.asarray(self.mkl_fft.ifftn(_input_kmap, axes=(0,1,2)).real, order='C')     
 
         elif self.backend=='jax':
-            arr = self.np.fft.ifftn(_input_kmap,axes=(-3,-2,-1))
-            return self.np.asarray(arr.real, order='C')
+            if self.real_fft:
+                return self.utils.jax_irfft(_input_kmap)
+            else:
+                return self.utils.jax_ifft(_input_kmap)
 
     def _pixel_window_1d(self, k):
         """Pixel window functions including first-order alias corrections (copied from nbodykit)"""
@@ -254,13 +291,12 @@ class PolyBin3D():
         elif self.backend=='jax':
             import jax
             import jax.numpy as jnp
-            jax.config.update("jax_enable_x64", False)
+            jax.config.update("jax_enable_x64", True)
             self.np = jnp
-            self.jax = jax
             if verb: print('# Using JAX backend')
             
         else:
-            raise Exception("Only 'fftw' and 'jax' backends are currently implemented!")
+            raise Exception("Only 'fftw', 'mkl' and 'jax' backends are currently implemented!")
 
     # Gaussian random field routines
     def generate_data(self, seed=None, Pk_input=[], output_type='real', include_pixel_window=True):
@@ -375,3 +411,51 @@ class PolyBin3D():
         # Optionally return to map-space
         if output_type=='real': return self.to_real(Sinv_fourier)
         else: return Sinv_fourier
+        
+    def apply_real_harmonics(self, a_map_fourier, Ylm_real, Ylm_fourier):
+        """Compute Sum_m Y_lm(k) a_lm^*(k) for some a(x)"""
+        if self.backend=='jax':
+            return self.utils.apply_real_harmonics(a_map_fourier, self.to_real, Ylm_real, Ylm_fourier)
+        else:
+            lm_sum = self.real_zeros()
+            for lm_ind in range(len(Ylm_real)):
+                map_lm = self.map_utils.prod_fourier(a_map_fourier,Ylm_fourier[lm_ind])
+                lm_sum += self.map_utils.prod_real(self.to_real(map_lm), Ylm_real[lm_ind])
+            return lm_sum
+        
+    def apply_fourier_harmonics(self, a_map_real, Ylm_real, Ylm_fourier):
+        """Compute Sum_m Y_lm(x) a_lm^*(x) for some a(k)"""
+        if self.backend=='jax':
+            return self.utils.apply_fourier_harmonics(a_map_real, self.to_fourier, Ylm_real, Ylm_fourier)
+        else:
+            lm_sum = self.complex_zeros()
+            for lm_ind in range(len(Ylm_real)):
+                map_lm = self.map_utils.prod_real(a_map_real,Ylm_real[lm_ind])
+                lm_sum += self.map_utils.prod_fourier(self.to_fourier(map_lm), Ylm_fourier[lm_ind])
+            return lm_sum
+        
+    def apply_xi(self, input_map_fourier, input_map_real=None, Ylm_real=None, Ylm_fourier=None, Pk_grid=[], output_type='real'):
+        """Apply xi(x,y) to a map (symmetrically). This is used to compute the covariance matrices."""
+        if self.sightline=='global':
+            P_map_fourier = self.map_utils.prod_fourier(input_map_fourier, Pk_grid[0])
+            if output_type=='fourier':
+                return P_map_fourier
+            elif output_type=='real':
+                return self.to_real(P_map_fourier)
+        elif self.sightline=='local':
+            # Add ell=0
+            P_map_fourier = self.map_utils.prod_fourier(input_map_fourier, Pk_grid[0])
+            if len(Pk_grid.keys())==1:
+                if output_type=='fourier': 
+                    return P_map_fourier
+                elif output_type=='real':
+                    return self.to_real(P_map_fourier)
+            P_map_real = self.real_zeros()
+            # Add higher ell components
+            for ell in list(Pk_grid.keys())[1:]:
+                P_map_fourier += 0.5*self.map_utils.prod_fourier(self.apply_fourier_harmonics(input_map_real, Ylm_real[ell], Ylm_fourier[ell]), Pk_grid[ell])
+                P_map_real += 0.5*self.apply_real_harmonics(self.map_utils.prod_fourier(input_map_fourier, Pk_grid[ell]), Ylm_real[ell], Ylm_fourier[ell])
+            if output_type=='fourier':
+                return P_map_fourier + self.to_fourier(P_map_real)
+            elif output_type=='real':
+                return self.to_real(P_map_fourier)+P_map_real 

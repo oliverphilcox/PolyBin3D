@@ -280,42 +280,6 @@ cdef class MapUtils:
     @cython.boundscheck(False)
     @cython.wraparound(False)
     @cython.cdivision(True)
-    cpdef void prod_fourier_sum(self, double complex[:,:,::1] map1, double[:,:,::1] map2, double complex[:,:,::1] out):
-        """Compute map1(k)map2(k) in Fourier-space (where map2 is real) and add to existing array."""
-        cdef long ik1, ik2, ik3
-        assert self.nk1==map2.shape[0]
-        assert self.nk2==map2.shape[1]
-        assert self.nk3==map2.shape[2]
-        assert self.nk1==out.shape[0]
-        assert self.nk2==out.shape[1]
-        assert self.nk3==out.shape[2]
-        
-        for ik1 in prange(self.nk1, schedule='static', num_threads=self.nthreads, nogil=True):
-            for ik2 in xrange(self.nk2):
-                for ik3 in xrange(self.nk3):
-                    out[ik1,ik2,ik3] += map1[ik1,ik2,ik3]*map2[ik1,ik2,ik3]
-        
-    @cython.boundscheck(False)
-    @cython.wraparound(False)
-    @cython.cdivision(True)
-    cpdef void prod_real_sum(self, double[:,:,::1] map1, double[:,:,::1] map2, double[:,:,::1] out):
-        """Compute map1(x)map2(x) in real-space and add to existing array."""
-        cdef long ix1, ix2, ix3
-        assert self.nx1==map2.shape[0]
-        assert self.nx2==map2.shape[1]
-        assert self.nx3==map2.shape[2]
-        assert self.nx1==out.shape[0]
-        assert self.nx2==out.shape[1]
-        assert self.nx3==out.shape[2]
-        
-        for ix1 in prange(self.nx1, schedule='static', num_threads=self.nthreads, nogil=True):
-            for ix2 in xrange(self.nx2):
-                for ix3 in xrange(self.nx3):
-                    out[ix1,ix2,ix3] += map1[ix1,ix2,ix3]*map2[ix1,ix2,ix3]
-
-    @cython.boundscheck(False)
-    @cython.wraparound(False)
-    @cython.cdivision(True)
     cpdef np.ndarray[np.complex128_t,ndim=3] fourier_filter(self, double complex[:,:,::1] kmap, int l, double kmin, double kmax):
         """Filter f(k) to Fourier modes with k in [kmin, kmax), and multiply by a Legendre polynomial."""
         cdef long ik1, ik2, ik3
@@ -355,25 +319,6 @@ cdef class MapUtils:
                         out[ik1,ik2,ik3] = kmap[ik1,ik2,ik3]*leg
         return out
 
-    @cython.boundscheck(False)
-    @cython.wraparound(False)
-    @cython.cdivision(True)
-    cpdef void fourier_filter_sum(self, double complex[:,:,::1] kmap, double complex[:,:,::1] out, int l, double kmin, double kmax):
-        """Filter f(k) to Fourier modes with k in [kmin, kmax), and multiply by a Legendre polynomial. This is added to the output map."""
-        cdef long ik1, ik2, ik3
-        cdef double leg
-        
-        for ik1 in prange(self.nk1, schedule='static', num_threads=self.nthreads, nogil=True):
-            for ik2 in xrange(self.nk2):
-                for ik3 in xrange(self.nk3):
-                    if (self.modk[ik1,ik2,ik3]>=kmin) and (self.modk[ik1,ik2,ik3]<kmax):
-                        # Compute legendre polynomial
-                        if l==0:
-                            leg = 1
-                        else:
-                            leg = legendre(l, self.muk[ik1,ik2,ik3])
-                        out[ik1,ik2,ik3] += kmap[ik1,ik2,ik3]*leg
-        
     @cython.boundscheck(False)
     @cython.wraparound(False)
     @cython.cdivision(True)
