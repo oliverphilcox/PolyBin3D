@@ -290,9 +290,10 @@ class PolyBin3D():
             
         elif self.backend=='jax':
             import jax
-            import jax.numpy as jnp
+            assert jax.lib.xla_bridge.get_backend().platform=='jax', "jax code should be run on GPUs!"
+            # use float64 precision
             jax.config.update("jax_enable_x64", True)
-            self.np = jnp
+            self.np = jax.numpy
             if verb: print('# Using JAX backend')
             
         else:
@@ -312,79 +313,43 @@ class PolyBin3D():
         if seed!=None:
             np.random.seed(seed)
             
-        if self.real_fft:
-            print('fix this!')
-            # Generate the power spectrum on a complex grid then make real afterwards
-
-            k_arrs = [np.fft.fftshift(np.arange(-self.gridsize[i]//2,self.gridsize[i]//2))*self.kF[i] for i in range(3)]
-            k_grids = np.meshgrid(*k_arrs,indexing='ij')
-            modk_grid_all = np.sqrt(k_grids[0]**2+k_grids[1]**2+k_grids[2]**2)     
-            if self.sightline=='global':
-                sight_vector = np.asarray([0.,0.,1.])
-            else:
-                sight_vector = self.boxcenter/np.sqrt(np.sum(self.boxcenter**2))
-            muk_grid_all = np.zeros(modk_grid_all.shape)
-            muk_grid_all[modk_grid_all!=0] = np.sum(sight_vector[:,None]*np.asarray(k_grids)[:,modk_grid_all!=0],axis=0)/modk_grid_all[modk_grid_all!=0]
-                    
-            # Define input power spectrum on the k-space grid
-            if len(Pk_input)==0:
-                Pk_grid = scipy.interpolate.interp1d(self.Pfid[0], self.Pfid[1], bounds_error=False, fill_value=0.)(modk_grid_all)
-            else:
-                assert len(np.asarray(Pk_input).shape)==2, "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
-                assert len(Pk_input) in [2,3,4], "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
-                
-                Pk_grid = scipy.interpolate.interp1d(Pk_input[0], Pk_input[1], bounds_error=False, fill_value=0.)(modk_grid_all)
-                if len(Pk_input)>2:
-                    Pk_grid += scipy.special.legendre(2)(muk_grid_all)*scipy.interpolate.interp1d(Pk_input[0], Pk_input[2], bounds_error=False, fill_value=0.)(modk_grid_all)
-                if len(Pk_input)>3:
-                    Pk_grid += scipy.special.legendre(4)(muk_grid_all)*scipy.interpolate.interp1d(Pk_input[0], Pk_input[3], bounds_error=False, fill_value=0.)(modk_grid_all)
-            
-            # Generate random Gaussian maps with input P(k)
-            rand_fourier = (np.random.randn(*self.gridsize)+1.0j*np.random.randn(*self.gridsize))*np.sqrt(Pk_grid)
-            rand_fourier[modk_grid_all==0] = 0.
-            
-            # Add pixel window function to delta(k)
-            if self.pixel_window!='none' and include_pixel_window:
-                windows_1d = [self._pixel_window_1d(np.pi/self.gridsize[i]*k_arrs[i]/self.kF[i]) for i in range(3)]
-                window_grid = np.asarray(np.meshgrid(*windows_1d,indexing='ij')).prod(axis=0)
-                rand_fourier *= window_grid
-                
-            # Force map to be real and normalize
-            self.real_fft = False
-            self._fft_setup(verb=False)
-            rand_real = self.to_real(rand_fourier)
-            self.real_fft = True
-            self._fft_setup(verb=False)
-            rand_real *= self.gridsize.prod()/np.sqrt(self.volume)
+        # Define input power spectrum on the k-space grid
+        if len(Pk_input)==0:
+            Pk_grid = self.Pk0_grid
         else:
-            # Define input power spectrum on the k-space grid
-            if len(Pk_input)==0:
-                Pk_grid = self.Pk0_grid
-            else:
-                assert len(np.asarray(Pk_input).shape)==2, "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
-                assert len(Pk_input) in [2,3,4], "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
-                
-                Pk_grid = scipy.interpolate.interp1d(Pk_input[0], Pk_input[1], bounds_error=False, fill_value=0.)(self.modk_grid)
-                if len(Pk_input)>2:
-                    Pk_grid += scipy.special.legendre(2)(self.muk_grid)*scipy.interpolate.interp1d(Pk_input[0], Pk_input[2], bounds_error=False, fill_value=0.)(self.modk_grid)
-                if len(Pk_input)>3:
-                    Pk_grid += scipy.special.legendre(4)(self.muk_grid)*scipy.interpolate.interp1d(Pk_input[0], Pk_input[3], bounds_error=False, fill_value=0.)(self.modk_grid)
+            assert len(np.asarray(Pk_input).shape)==2, "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
+            assert len(Pk_input) in [2,3,4], "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
             
-            # Generate random Gaussian maps with input P(k)
-            rand_fourier = (np.random.randn(*self.gridsize)+1.0j*np.random.randn(*self.gridsize))*np.sqrt(Pk_grid)
-            rand_fourier[self.modk_grid==0] = 0.
-            
-            # Add pixel window function to delta(k)
-            if self.pixel_window!='none' and include_pixel_window:
-                rand_fourier = self.map_utils.prod_fourier(rand_fourier, self.pixel_window_grid)
-            
-            # Force map to be real and normalize
-            rand_real = self.to_real(rand_fourier)
-            rand_real *= self.gridsize.prod()/np.sqrt(self.volume)
+            Pk_grid = scipy.interpolate.interp1d(Pk_input[0], Pk_input[1], bounds_error=False, fill_value=0.)(self.modk_grid)
+            if len(Pk_input)>2:
+                Pk_grid += scipy.special.legendre(2)(self.muk_grid)*scipy.interpolate.interp1d(Pk_input[0], Pk_input[2], bounds_error=False, fill_value=0.)(self.modk_grid)
+            if len(Pk_input)>3:
+                Pk_grid += scipy.special.legendre(4)(self.muk_grid)*scipy.interpolate.interp1d(Pk_input[0], Pk_input[3], bounds_error=False, fill_value=0.)(self.modk_grid)
+
+        # Generate random Gaussian maps
+        rand_fourier = (np.random.randn(*self.gridsize)+1.0j*np.random.randn(*self.gridsize))
+        rand_fourier[0,0,0] = 0.
         
-        if output_type=='real': return rand_real
-        else: return self.to_fourier(rand_real)
+        # Force map to be Hermitian
+        ii, jj, kk = np.meshgrid(*[np.arange(self.gridsize[ii]) for ii in range(3)], indexing='ij')
+        rand_fourier = 0.5*(rand_fourier + np.conj(rand_fourier[(-ii)%self.gridsize[0], (-jj)%self.gridsize[1], (-kk)%self.gridsize[2]]))
+
+        # Optionally remove negative frequency modes
+        if self.real_fft:
+            rand_fourier = np.asarray(rand_fourier[:,:,:self.gridsize[2]//2+1], dtype=np.complex128, order='C')
         
+        # Apply power spectrum and normalization
+        rand_fourier = self.map_utils.prod_fourier(rand_fourier, np.sqrt(Pk_grid))*self.gridsize.prod()/np.sqrt(self.volume)
+        
+        # Add pixel window function to delta(k)
+        if self.pixel_window!='none' and include_pixel_window:
+            rand_fourier = self.map_utils.prod_fourier(rand_fourier, self.pixel_window_grid)
+
+        if output_type=='fourier':
+            return rand_fourier
+        elif output_type=='real':
+            return self.to_real(rand_fourier)    
+    
     def applyAinv(self, input_data, invPk0_grid=None, input_type='real', output_type='real'):
         """Apply the exact inverse weighting A^{-1} to a map. This assumes a diagonal-in-ell C_l^{XY} weighting, as produced by generate_data.
         
@@ -435,7 +400,7 @@ class PolyBin3D():
             return lm_sum
         
     def apply_xi(self, input_map_fourier, input_map_real=None, Ylm_real=None, Ylm_fourier=None, Pk_grid=[], output_type='real'):
-        """Apply xi(x,y) to a map (symmetrically). This is used to compute the covariance matrices."""
+        """Apply xi(x,y) to a map (symmetrically), given a gridded power spectrum. This is used to compute the covariance matrices."""
         if self.sightline=='global':
             P_map_fourier = self.map_utils.prod_fourier(input_map_fourier, Pk_grid[0])
             if output_type=='fourier':

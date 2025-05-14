@@ -151,37 +151,43 @@ def legendre(l, mu):
     
     return jax.lax.switch(l, funcs, mu)           
 
+@jax.jit
 def pointing_GIC(map1, mask, mask_GIC, nthreads):
     """Compute pointing matrix with global integral constraint."""
     av_map = jnp.sum(map1*mask_GIC)/jnp.sum(mask_GIC)
     return mask*(map1-av_map)
-     
+
+@jax.jit
 def pointing_GIC_transpose(map1, mask, mask_GIC, nthreads):
     """Compute pointing matrix transpose with global integral constraint."""
     av_map = jnp.sum(map1*mask)/jnp.sum(mask_GIC)
     return mask*map1 - mask_GIC*av_map
      
+@jax.jit
 def pointing_RIC(map1, mask, mask_GIC, radial_edges, radial_grid, nthreads):
     """Compute pointing matrix with radial integral constraint."""
-    # Define radial slices
-    radial_slices = (radial_grid[None,:,:,:]>=radial_edges[:-1][:,None,None,None])*(radial_grid[None,:,:,:]<radial_edges[1:][:,None,None,None])
     
-    # Compute averages of data in each radial bin
-    av_map = jnp.sum((map1*mask_GIC)[None,:,:,:]*radial_slices, axis=(1,2,3))/jnp.sum(mask_GIC[None,:,:,:]*radial_slices, axis=(1,2,3))
-    
-    # Combine to form pointing matrix
-    return jnp.sum(mask[None,:,:,:]*(map1[None,:,:,:] - av_map[:,None,None,None])*radial_slices, axis=0)
-     
+    output = jnp.zeros_like(map1)
+    for i in range(len(radial_edges)-1):
+        radial_slice = (radial_grid>=radial_edges[i])*(radial_grid<radial_edges[i+1])
+        # Compute average of data in each radial bin
+        av_map = jnp.sum(map1*mask_GIC*radial_slice)/jnp.sum(mask_GIC*radial_slice)
+        # Combine to form pointing matrix
+        output += mask*(map1-av_map)*radial_slice
+    return output
+
+@jax.jit
 def pointing_RIC_transpose(map1, mask, mask_GIC, radial_edges, radial_grid, nthreads):
     """Compute pointing matrix transpose with radial integral constraint."""
-    # Define radial slices
-    radial_slices = (radial_grid[None,:,:,:]>=radial_edges[:-1][:,None,None,None])*(radial_grid[None,:,:,:]<radial_edges[1:][:,None,None,None])
     
-    # Compute averages of data in each radial bin
-    av_map = jnp.sum((map1*mask)[None,:,:,:]*radial_slices, axis=(1,2,3))/jnp.sum(mask_GIC[None,:,:,:]*radial_slices, axis=(1,2,3))
-   
-    # Combine to form pointing matrix
-    return jnp.sum(((mask*map1)[None,:,:,:]-mask_GIC[None,:,:,:]*av_map[:,None,None,None])*radial_slices, axis=0)
+    output = jnp.zeros_like(map1)
+    for i in range(len(radial_edges)-1):
+        radial_slice = (radial_grid>=radial_edges[i])*(radial_grid<radial_edges[i+1])
+        # Compute average of data in each radial bin
+        av_map = jnp.sum(map1*mask*radial_slice)/jnp.sum(mask_GIC*radial_slice)
+        # Add to output
+        output += (mask*map1-mask_GIC*av_map)*radial_slice
+    return output
     
 def compute_real_harmonics(coordinates, lmax, odd_l, nthreads):
     """Compute the real spherical harmonics on the coordinate grid."""
