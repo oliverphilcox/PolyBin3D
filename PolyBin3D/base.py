@@ -290,7 +290,7 @@ class PolyBin3D():
             
         elif self.backend=='jax':
             import jax
-            assert jax.lib.xla_bridge.get_backend().platform=='jax', "jax code should be run on GPUs!"
+            assert jax.lib.xla_bridge.get_backend().platform=='gpu', "jax code should be run on GPUs!"
             # use float64 precision
             jax.config.update("jax_enable_x64", True)
             self.np = jax.numpy
@@ -349,6 +349,15 @@ class PolyBin3D():
             return rand_fourier
         elif output_type=='real':
             return self.to_real(rand_fourier)    
+    
+    def applySinv_trivial(self, input_data, input_type='real', output_type='real'):
+        """Apply a trivial filter to the data, converting to real/Fourier-space as appropriate."""
+        if (input_type=='fourier' and output_type=='fourier') or (input_type=='real' and output_type=='real'):
+            return input_data
+        elif (input_type=='fourier' and output_type=='real'):
+            return self.to_real(input_data)
+        elif (input_type=='real' and output_type=='fourier'):
+            return self.to_fourier(input_data)
     
     def applyAinv(self, input_data, invPk0_grid=None, input_type='real', output_type='real'):
         """Apply the exact inverse weighting A^{-1} to a map. This assumes a diagonal-in-ell C_l^{XY} weighting, as produced by generate_data.

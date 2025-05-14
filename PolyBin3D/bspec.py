@@ -17,7 +17,7 @@ class BSpec():
     - k_bins: array of one-dimensional k bin edges (e.g., [0.01, 0.02, 0.03] would give two bins: [0.01,0.02] and [0.02,0.03]).
     - lmax: (optional) maximum Legendre multipole, default: 0.
     - mask: (optional) 3D mask, specifying the background density n(x,y,z).
-    - applySinv: (optional) function which weights the data field. This is only required for unwindowed estimators.
+    - applySinv: (optional) function which weights the data field. This is only used in unwindowed estimators.
     - k_bins_squeeze: (optional) array of one-dimensional squeezed bin edges. These can be used to compute squeezed triangles, giving a different kmax for short and long sides.
     - include_partial_triangles: (optional) whether to include triangles whose centers don't satisfy the triangle conditions, default: False
     - add_GIC: (optional) whether to include the global integral constraint, default: False
@@ -26,8 +26,9 @@ class BSpec():
     - radial_bins_RIC: (optional) radial bins used to define n(z) [used for the RIC correction].
     - Pk_fid: (optional) fiducial power spectrum to use in ideal Fisher matrix and symmetry factors. If set to 'default', we use the same as the base class. Default: None.
     - mask_shot: (optional) triply weighted 3D field used to define the shot-noise numerator.
+    - applySinv_transpose: (optional) transpose of function which weights the data field. This is only used in unwindowed estimators.
     """
-    def __init__(self, base, k_bins, lmax=0, mask=None, applySinv=None, k_bins_squeeze=None, include_partial_triangles=False, add_GIC=False, mask_IC=None, add_RIC=False, radial_bins_RIC=[], Pk_fid=None, mask_shot=None):
+    def __init__(self, base, k_bins, lmax=0, mask=None, applySinv=None, k_bins_squeeze=None, include_partial_triangles=False, add_GIC=False, mask_IC=None, add_RIC=False, radial_bins_RIC=[], Pk_fid=None, mask_shot=None, applySinv_transpose=None):
         # Read in attributes
         self.base = base
         self.applySinv = applySinv
@@ -39,6 +40,7 @@ class BSpec():
         self.add_GIC = add_GIC
         self.add_RIC = add_RIC
         self.Pk_fid = Pk_fid
+        self.applySinv_transpose = applySinv_transpose
         
         print("")
         assert self.lmax%2==0, "l-max must be even!"
@@ -89,6 +91,8 @@ class BSpec():
             assert not self.add_GIC, "Global integral constraint cannot be used without a mask!"
             assert not self.add_RIC, "Radial integral constraint cannot be used without a mask!"
         else:
+            if type(mask)!=np.ndarray:
+                mask = np.array(mask)
             self.mask = mask.astype(np.float64)
             if type(mask_IC)!=type(None):
                 self.mask_IC = mask_IC.astype(np.float64)
@@ -108,6 +112,16 @@ class BSpec():
         # Read-in shot-noise mask
         if type(mask_shot)!=type(None):
             self.mask_shot = mask_shot.astype(np.float64)
+        
+        # Check S^-1 functions
+        if self.applySinv is None:
+            self.applySinv = self.base.applySinv_trivial
+        else:
+            if type(self.applySinv_transpose)!=type(lambda x: x):
+                self.applySinv_transpose = self.applySinv
+                print("## Caution: assuming S^-1 is Hermitian!")
+        if self.applySinv_transpose is None:
+            self.applySinv_transpose = self.base.applySinv_trivial
         
         # Check integral constraints
         if self.add_GIC:
@@ -131,15 +145,15 @@ class BSpec():
                 Pfid = np.asarray(self.Pk_fid)
             
             # Apply Pk to grid
-            Pk0_grid = interp1d(Pfid[0], Pfid[1], bounds_error=False)(self.base.modk_grid)
+            Pk0_grid = interp1d(Pfid[0], Pfid[1], bounds_error=False, fill_value=0.)(self.base.modk_grid)
             
             # Invert Pk
-            self.invPk0 = np.zeros(Pk0_grid.shape, dtype=np.complex128)
+            self.invPk0 = np.zeros(Pk0_grid.shape, dtype=np.float64)
             self.invPk0[Pk0_grid!=0] = 1./Pk0_grid[Pk0_grid!=0] 
             del Pk0_grid
             
         else:
-            self.invPk0 = self.base.invPk0_grid+self.base.complex_zeros()
+            self.invPk0 = self.base.invPk0_grid
                                                  
         # Define spherical harmonics in real-space [for computing bispectrum multipoles]
         if self.base.sightline=='local' and self.lmax>0:
@@ -233,7 +247,7 @@ class BSpec():
             # Define discrete binning functions
             bins = self.base.real_zeros(self.Nk_squeeze, numpy=True)
             for b in range(self.Nk_squeeze):
-                bins[b] = self.base.to_real(self.base.map_utils.fourier_filter(self.invPk0, 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+                bins[b] = self.base.to_real(self.base.map_utils.fourier_filter(self.invPk0.astype(np.complex128), 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
             
             for l in range(2,self.lmax+1,2):
 
@@ -241,7 +255,7 @@ class BSpec():
                 bin23_l = self.base.real_zeros(self.Nk_squeeze, numpy=True)
                 for b in range(self.Nk_squeeze):
                     for lm_ind in range(len(self.Ylm_fourier[l])): 
-                        bin23_l[b] += self.base.to_real(self.base.map_utils.prod_fourier_filter(self.invPk0, self.Ylm_fourier[l][lm_ind], self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))**2.
+                        bin23_l[b] += self.base.to_real(self.base.map_utils.prod_fourier_filter(self.invPk0.astype(np.complex128), self.Ylm_fourier[l][lm_ind], self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))**2.
                     
                 # Iterate over bins
                 for bin1 in range(self.Nk):
@@ -421,9 +435,6 @@ class BSpec():
         if not self.const_mask:
             assert data.shape == self.mask.shape, "Data must have same shape as the mask!"
         
-        if self.applySinv==None:
-            raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
-
         # Send to wrapper
         return self._compute_bk_numerator(data, include_linear_term=include_linear_term, filtering='Sinv', verb=verb)
 
@@ -431,23 +442,12 @@ class BSpec():
         """
         This computes the contribution to the Fisher matrix from a single pair of GRF simulations, created internally.
         """
-        if self.applySinv==None:
-            raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
-
         return self._compute_fisher(seed, verb=verb)
     
-    def compute_covariance_contribution(self, seed, Pk_cov, applySinv_transpose=None, verb=False, mask_shot_2pt=None):
+    def compute_covariance_contribution(self, seed, Pk_cov, verb=False, mask_shot_2pt=None):
         """This computes the contribution to the Gaussian covariance matrix from a single pair of GRF simulations, created internally.
         
-        This requires an input theory power spectrum, Pk_cov (without shot-noise). We can feed in a (two-point) shot-noise mask.
-        
-        An optional input is a function that applies (S^-1)^dagger to a map. The code will assume (S^-1)^dagger = S^-1 if this is not supplied."""
-        if self.applySinv==None:
-            raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
-    
-        if type(applySinv_transpose)!=type(lambda x: x):
-            applySinv_transpose = self.applySinv
-            print("## Caution: assuming S^-1 is symmetric!")
+        This requires an input theory power spectrum, Pk_cov (without shot-noise). We can feed in a (two-point) shot-noise mask."""
         
         if (not self.const_mask) and (mask_shot_2pt is None):
             assert self.mask_shot is not None, "Must supply a shot-noise mask to compute the shot-noise contribution!"
@@ -468,9 +468,9 @@ class BSpec():
                 self.Ylm_fourier = {k: self.base.np.array(self.Ylm_fourier[k]) for k in self.Ylm_fourier.keys()}
                 self.Ylm_real = {k: self.base.np.array(self.Ylm_real[k]) for k in self.Ylm_real.keys()}
             
-        return self._compute_fisher(seed, applySinv_transpose=applySinv_transpose, verb=verb, compute_cov=True, Pk_cov=Pk_cov)
+        return self._compute_fisher(seed, verb=verb, compute_cov=True, Pk_cov=Pk_cov)
     
-    def _compute_fisher(self, seed, applySinv_transpose=None, compute_cov=False, Pk_cov=[], verb=False):
+    def _compute_fisher(self, seed, compute_cov=False, Pk_cov=[], verb=False):
         """Internal function to compute the contribution to the Fisher matrix or covariance."""
  
         # Compute symmetry factor, if not already present
@@ -506,11 +506,11 @@ class BSpec():
             else:
                 # Apply S^-1 [P Cov P^dagger + N] S^-dagger in order to compute covariances
                 if self.const_mask:
-                    Sid_map = applySinv_transpose(input_map, input_type='fourier', output_type='fourier')
+                    Sid_map = self.applySinv_transpose(input_map, input_type='fourier', output_type='fourier')
                     CSid_map = self.mask_mean**2*self.base.apply_xi(Sid_map, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='fourier') + self.mask_mean*Sid_map
                     return self.applySinv(CSid_map, input_type='fourier', output_type='fourier')
                 else:
-                    Sid_map = applySinv_transpose(input_map, input_type='real', output_type='real')
+                    Sid_map = self.applySinv_transpose(input_map, input_type='real', output_type='real')
                     PdSid_map_real = self.apply_pointing(Sid_map, transpose=True)
                     PdSid_map = self.base.to_fourier(PdSid_map_real)
                     CPdSid_map = self.base.apply_xi(PdSid_map, PdSid_map_real, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='real')
@@ -675,30 +675,17 @@ class BSpec():
 
         return fish
     
-    def compute_fisher(self, N_it, N_cpus=1, verb=False):
+    def compute_fisher(self, N_it, verb=False):
         """
-        Compute the Fisher matrix and shot-noise term using N_it realizations. If N_cpus > 1, this parallelizes the operations.
+        Compute the Fisher matrix using N_it realizations. Since the calculation is already parallelized, this is run in serial.
         """
-        
-        if self.applySinv==None:
-            raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
-
         # Initialize output
         fish = np.zeros((self.N_bins,self.N_bins))
         
-        global _iterable
-        def _iterable(seed):
-            return self.compute_fisher_contribution(seed, verb=verb)
-        
-        if N_cpus==1:
-            for seed in range(N_it):
-                if seed%5==0: print("## Computing Fisher contribution %d of %d"%(seed+1,N_it))
-                fish += self.compute_fisher_contribution(seed, verb=verb)/N_it
-        else:
-            p = mp.Pool(N_cpus)
-            print("## Computing Fisher contribution from %d Monte Carlo simulations on %d threads"%(N_it, N_cpus))
-            all_fish = list(tqdm.tqdm(p.imap_unordered(_iterable,np.arange(N_it)),total=N_it))
-            fish = np.sum(all_fish,axis=0)/N_it
+        # Iterate over realizations in serial
+        for seed in range(N_it):
+            if seed%5==0: print("Computing Fisher contribution %d of %d"%(seed+1,N_it))
+            fish += self.compute_fisher_contribution(seed, verb=verb)/N_it
             
         self.fish = fish
         self.inv_fish = np.linalg.inv(fish)
@@ -734,9 +721,6 @@ class BSpec():
         else:
             print("## Caution: Dropping quadratic (~ P(k)/n) term!")
             
-        if self.applySinv==None:
-            raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
-        
         assert hasattr(self, 'mask_shot'), "Must supply triply-weighted mask to compute the shot-noise contribution!" 
         
         # Compute symmetry factor, if not already present
@@ -884,9 +868,6 @@ class BSpec():
         We can optionally drop the linear term (at the cost of slightly enhanced large-scale variance).
         """
         
-        if self.applySinv==None:
-            raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
-
         # Compute inverse Fisher
         if len(fish)!=0:
             self.fish = fish
@@ -930,18 +911,18 @@ class BSpec():
         if self.base.pixel_window!='none':
             
             # Transform to Fourier-space
-            data_fourier = self.base.to_fourier(data)/self.base.pixel_window_grid
-            
+            data_fourier = self.base.map_utils.div_fourier(self.base.to_fourier(data), self.base.pixel_window_grid)
+                        
             if filtering=='ideal':
                 # Filter by 1/P_fid
-                Sinv_data_fourier = data_fourier*self.base.invPk0_grid/self.cube_mask_mean**(1./3.)
+                Sinv_data_fourier = self.base.map_utils.prod_fourier(data_fourier, self.invPk0)/self.cube_mask_mean**(1./3.)
             elif filtering=='Sinv':
                 Sinv_data_fourier = self.applySinv(data_fourier, input_type='fourier', output_type='fourier')
         
         else:
             if filtering=='ideal':
                 # Filter by 1/P_fid
-                Sinv_data_fourier = self.base.to_fourier(data)*self.base.invPk0_grid/self.cube_mask_mean**(1./3.)
+                Sinv_data_fourier = self.base.map_utils.prod_fourier(self.base.to_fourier(data), self.invPk0)/self.cube_mask_mean**(1./3.)
             elif filtering=='Sinv':
                 Sinv_data_fourier = self.applySinv(data, input_type='real', output_type='fourier')
          
@@ -1036,7 +1017,7 @@ class BSpec():
             bins_l = self.base.real_zeros((self.Nl, self.Nk_squeeze), numpy=True)
             for l in range(0, self.lmax+1, 2):
                 for b in range(self.Nk_squeeze):
-                    bins_l[l//2][b] = self.base.to_real(self.base.map_utils.fourier_filter(self.invPk0, l, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+                    bins_l[l//2][b] = self.base.to_real(self.base.map_utils.fourier_filter(self.invPk0.astype(np.complex128), l, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
 
             # Iterate over Legendre multipoles
             for l in range(0, self.lmax+1, 2):
@@ -1046,7 +1027,7 @@ class BSpec():
                     # Compute double Legendre-weighted data
                     bins_llp = self.base.real_zeros(self.Nk_squeeze, numpy=True)
                     for b in range(self.Nk_squeeze):
-                        bins_llp[b] = self.base.to_real(self.base.map_utils.fourier_filter_ll(self.invPk0, l, lp, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+                        bins_llp[b] = self.base.to_real(self.base.map_utils.fourier_filter_ll(self.invPk0.astype(np.complex128), l, lp, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
                     
                     # Assemble output, iterating over symmetries
                     for i in range(self.N3):
@@ -1075,7 +1056,7 @@ class BSpec():
             if verb: print("Computing u_{b,0}(r) maps")
             bins = self.base.real_zeros(self.Nk_squeeze, numpy=True)
             for b in range(self.Nk_squeeze):
-                bins[b] = self.base.to_real(self.base.map_utils.fourier_filter(self.invPk0, 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+                bins[b] = self.base.to_real(self.base.map_utils.fourier_filter(self.invPk0.astype(np.complex128), 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
 
             # Assume Int L_ell(k.n) L_ell'(k.n) = 1/(2 ell + 1) Kronecker[ell, ell'] etc.
             fish_diag = np.zeros(self.N_bins)

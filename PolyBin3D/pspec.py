@@ -15,15 +15,16 @@ class PSpec():
     - k_bins: array of k bin edges (e.g., [0.01, 0.02, 0.03] would give two bins: [0.01,0.02] and [0.02,0.03]).
     - lmax: (optional) maximum Legendre multipole, default: 2.
     - mask: (optional) 3D mask, specifying the background density n(x,y,z).
-    - applySinv: (optional) function which weights the data field. This is only required for unwindowed estimators.
+    - applySinv: (optional) function which weights the data field. This is only used in unwindowed estimators.
     - odd_l: (optional) whether to include odd ell-modes in the estimator, default: False. Only relevant for local lines-of-sight.
     - add_GIC: (optional) whether to include the global integral constraint, default: False
     - add_RIC: (optional) whether to include the radial integral constraint, default: False
     - mask_IC: (optional) unweighted 3D mask used to model integral constraints.
     - radial_bins_RIC: (optional) radial bins used to define n(z) [used for the RIC correction].
     - mask_shot: (optional) doubly weighted 3D field used to define shot-noise.
+    - applySinv_transpose: (optional) transpose of function which weights the data field. This is only used in unwindowed estimators.
     """
-    def __init__(self, base, k_bins, lmax=2, mask=None, applySinv=None, odd_l=False, add_GIC=False, mask_IC=None, add_RIC=False, radial_bins_RIC=[], mask_shot=None):
+    def __init__(self, base, k_bins, lmax=2, mask=None, applySinv=None, odd_l=False, add_GIC=False, mask_IC=None, add_RIC=False, radial_bins_RIC=[], mask_shot=None, applySinv_transpose=None):
         # Read in attributes
         self.base = base
         self.applySinv = applySinv
@@ -39,6 +40,7 @@ class PSpec():
         self.N_bins = self.Nk*self.Nl
         self.add_GIC = add_GIC
         self.add_RIC = add_RIC
+        self.applySinv_transpose = applySinv_transpose
         
         print("")
         assert np.max(self.k_bins)<np.min(base.kNy), "k_max must be less than k_Nyquist!"
@@ -64,6 +66,8 @@ class PSpec():
             assert not self.add_GIC, "Global integral constraint cannot be used without a mask!"
             assert not self.add_RIC, "Radial integral constraint cannot be used without a mask!"
         else:
+            if type(mask)!=np.ndarray:
+                mask = np.array(mask)
             self.mask = mask.astype(np.float64)
             if type(mask_IC)!=type(None):
                 self.mask_IC = mask_IC.astype(np.float64)
@@ -83,6 +87,16 @@ class PSpec():
         # Read-in shot-noise mask
         if type(mask_shot)!=type(None):
             self.mask_shot = mask_shot.astype(np.float64)
+        
+        # Check S^-1 functions
+        if self.applySinv is None:
+            self.applySinv = self.base.applySinv_trivial
+        else:
+            if type(self.applySinv_transpose)!=type(lambda x: x):
+                self.applySinv_transpose = self.applySinv
+                print("## Caution: assuming S^-1 is Hermitian!")
+        if self.applySinv_transpose is None:
+            self.applySinv_transpose = self.base.applySinv_trivial
         
         # Check integral constraints
         if self.add_GIC:
@@ -121,64 +135,41 @@ class PSpec():
         if not self.const_mask:
             assert data.shape == self.mask.shape, "Data must have same shape as the mask!"
 
-        if self.applySinv==None:
-            raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
-        
         # Send to wrapper
         return self._compute_pk_numerator(data, filtering='Sinv')
     
-    def compute_fisher_contribution(self, seed, applySinv_transpose=None, verb=False):
+    def compute_fisher_contribution(self, seed, verb=False):
         """This computes the contribution to the Fisher matrix from a single GRF simulation, created internally.
         
         An optional input is a function that applies (S^-1)^dagger to a map. The code will assume (S^-1)^dagger = S^-1 if this is not supplied."""
-                
-        if self.applySinv==None:
-            raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
-
-        if type(applySinv_transpose)!=type(lambda x: x):
-            applySinv_transpose = self.applySinv
-            print("## Caution: assuming S^-1 is Hermitian!")
-
+        
         # Run main algorithm
-        return self._compute_fisher(seed, applySinv_transpose=applySinv_transpose, verb=verb, compute_cov=False)
+        return self._compute_fisher(seed, verb=verb, compute_cov=False)
     
-    def compute_covariance_contribution(self, seed, Pk_cov, applySinv_transpose=None, verb=False):
+    def compute_covariance_contribution(self, seed, Pk_cov, verb=False):
         """This computes the contribution to the Gaussian covariance matrix from a single GRF simulation, created internally.
         
         This requires an input theory power spectrum, Pk_cov (without shot-noise).
         
         An optional input is a function that applies (S^-1)^dagger to a map. The code will assume (S^-1)^dagger = S^-1 if this is not supplied."""
-        if self.applySinv==None:
-            raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
         if not self.const_mask:
             assert hasattr(self, 'mask_shot'), "Must supply mask_shot to compute shot-noise contribution"
         
-        if type(applySinv_transpose)!=type(lambda x: x):
-            applySinv_transpose = self.applySinv
-            print("## Caution: assuming S^-1 is Hermitian!")
-
         assert len(Pk_cov)!=0, "Must provide fiducial power spectrum if computing covariance!"
         assert len(np.asarray(Pk_cov).shape)==2, "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
         assert len(Pk_cov) in [2,3,4], "Pk should contain k and P_0, (and optionally P_2, P_4) columns"
         assert (len(Pk_cov)-2)*2<=self.lmax, "Can't use higher multipoles than lmax"
 
-        return self._compute_fisher(seed, applySinv_transpose=applySinv_transpose, verb=verb, compute_cov=True, Pk_cov=Pk_cov)
+        return self._compute_fisher(seed, verb=verb, compute_cov=True, Pk_cov=Pk_cov)
     
-    def compute_theory_contribution(self, seed, k_bins_theory, lmax_theory=None, include_wideangle=False, applySinv_transpose=None, verb=False):
+    def compute_theory_contribution(self, seed, k_bins_theory, lmax_theory=None, include_wideangle=False, verb=False):
         """This computes the a rectangular matrix used to window-convolve the theory, using a single GRF simulation, created internally.
         We also compute and output the contribution to the (square) Fisher matrix, used for normalization.
         
-        We must specify the desired theory binning and lmax. An optional input is a function that applies S^-dagger to a map. The code will assume S^-dagger = S^-1 if this is not supplied.
+        We must specify the desired theory binning and lmax.
         
         Finally, we can optionally add wide-angle effects (for the theory matrix, not the Fisher matrix)."""
 
-        if self.applySinv==None:
-            raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
-
-        if type(applySinv_transpose)!=type(lambda x: x):
-            applySinv_transpose = self.applySinv
-            print("## Caution: assuming S^-1 is Hermitian!")
-            
         # Check k-binning array
         k_bins_theory = np.asarray(k_bins_theory)
         assert np.max(k_bins_theory)<np.min(self.base.kNy), "k_max must be less than k_Nyquist!"
@@ -203,7 +194,7 @@ class PSpec():
                 assert lmax_theory%2==0, "Must use even lmax if not including wide-angle effects!"
         
         # Run main code
-        return self._compute_fisher(seed, applySinv_transpose, verb=verb, compute_theory=True, k_bins_theory=k_bins_theory, lmax_theory=lmax_theory, include_wideangle=include_wideangle)
+        return self._compute_fisher(seed, verb=verb, compute_theory=True, k_bins_theory=k_bins_theory, lmax_theory=lmax_theory, include_wideangle=include_wideangle)
     
     def apply_pointing(self, map_real, transpose=False):
         """Apply the pointing matrix to a map. This multiplies by the mask and optionally includes IC effects."""
@@ -221,9 +212,9 @@ class PSpec():
             out = self.base.map_utils.prod_real(map_real, self.mask)
             return out
 
-    def _compute_fisher(self, seed, applySinv_transpose=None, verb=False, compute_cov=False, Pk_cov=[], compute_theory=False, k_bins_theory=[], lmax_theory=None, include_wideangle=False):
+    def _compute_fisher(self, seed, verb=False, compute_cov=False, Pk_cov=[], compute_theory=False, k_bins_theory=[], lmax_theory=None, include_wideangle=False):
         """Internal function to compute the contribution to the Fisher matrix, covariance, or theory matrix."""
- 
+
         # Initialize output
         fisher_matrix = np.zeros((self.N_bins,self.N_bins))
         if compute_theory:
@@ -286,11 +277,11 @@ class PSpec():
             else:
                 # Apply S^-1 [P Cov P^dagger + N] S^-dagger in order to compute covariances
                 if self.const_mask:
-                    Sid_map = applySinv_transpose(input_map, input_type='fourier', output_type='fourier')
+                    Sid_map = self.applySinv_transpose(input_map, input_type='fourier', output_type='fourier')
                     CSid_map = self.mask_mean**2*self.base.apply_xi(Sid_map, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='fourier') + self.mask_mean*Sid_map
                     return self.applySinv(CSid_map, input_type='fourier', output_type='fourier')
                 else:
-                    Sid_map = applySinv_transpose(input_map, input_type='real', output_type='real')
+                    Sid_map = self.applySinv_transpose(input_map, input_type='real', output_type='real')
                     PdSid_map_real = self.apply_pointing(Sid_map, transpose=True)
                     PdSid_map = self.base.to_fourier(PdSid_map_real)
                     CPdSid_map = self.base.apply_xi(PdSid_map, PdSid_map_real, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='real')
@@ -302,29 +293,29 @@ class PSpec():
             if not compute_cov:
                 if self.const_mask:
                     if real:
-                        return self.mask_mean*applySinv_transpose(input_map,input_type='real',output_type='fourier')
+                        return self.mask_mean*self.applySinv_transpose(input_map,input_type='real',output_type='fourier')
                     else:
-                        return self.mask_mean*applySinv_transpose(input_map,input_type='fourier',output_type='fourier')         
+                        return self.mask_mean*self.applySinv_transpose(input_map,input_type='fourier',output_type='fourier')         
                 else:
                     if real:
                         # Use real-space map directly
-                        return self.base.to_fourier(self.apply_pointing(applySinv_transpose(input_map,input_type='real',output_type='real'), transpose=True))
+                        return self.base.to_fourier(self.apply_pointing(self.applySinv_transpose(input_map,input_type='real',output_type='real'), transpose=True))
                     else:
-                        return self.base.to_fourier(self.apply_pointing(applySinv_transpose(input_map,input_type='fourier',output_type='real'), transpose=True))
+                        return self.base.to_fourier(self.apply_pointing(self.applySinv_transpose(input_map,input_type='fourier',output_type='real'), transpose=True))
             else:
                 # Apply S^-1 P Cov P^dagger S^-dagger in order to compute covariances
                 if self.const_mask:
                     if real:
-                        PdSid_map = self.mask_mean*applySinv_transpose(input_map, input_type='real', output_type='fourier')
+                        PdSid_map = self.mask_mean*self.applySinv_transpose(input_map, input_type='real', output_type='fourier')
                     else:
-                        PdSid_map = self.mask_mean*applySinv_transpose(input_map, input_type='fourier', output_type='fourier')
+                        PdSid_map = self.mask_mean*self.applySinv_transpose(input_map, input_type='fourier', output_type='fourier')
                     PCPdSid_map = self.mask_mean*self.base.apply_xi(PdSid_map, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='fourier')
                     return self.applySinv(PCPSid_map, input_type='fourier', output_type='fourier')
                 else:
                     if real:
-                        Sid_map = applySinv_transpose(input_map, input_type='real', output_type='real')
+                        Sid_map = self.applySinv_transpose(input_map, input_type='real', output_type='real')
                     else:
-                        Sid_map = applySinv_transpose(input_map, input_type='fourier', output_type='real')
+                        Sid_map = self.applySinv_transpose(input_map, input_type='fourier', output_type='real')
                     PdSid_map_real = self.apply_pointing(Sid_map, transpose=True)
                     PdSid_map = self.base.to_fourier(PdSid_map_real)
                     CPdSid_map = self.base.apply_xi(PdSid_map, PdSid_map_real, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='real')
@@ -504,8 +495,6 @@ class PSpec():
     def compute_shot_contribution(self, seed):
         """This computes the contribution to the shot-noise from a single GRF simulation, created internally."""
                 
-        if self.applySinv==None:
-            raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
         if not self.const_mask:
             assert hasattr(self, 'mask_shot'), "Must supply mask_shot to compute shot-noise contribution"
 
@@ -561,20 +550,18 @@ class PSpec():
         
         return shot
 
-    def compute_fisher(self, N_it, verb=False, applySinv_transpose=None):
+    def compute_fisher(self, N_it, verb=False):
         """
-        Compute the Fisher matrix using N_it realizations. Since the calculation is already parallelized, this is run in serial."""
+        Compute the Fisher matrix using N_it realizations. Since the calculation is already parallelized, this is run in serial.
+        """
         
-        if self.applySinv==None:
-            raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
-
         # Initialize output
         fish = np.zeros((self.N_bins,self.N_bins))
         
         # Iterate over realizations in serial
         for seed in range(N_it):
             if seed%5==0: print("Computing Fisher contribution %d of %d"%(seed+1,N_it))
-            fish += self.compute_fisher_contribution(seed, applySinv_transpose=None, verb=verb)/N_it
+            fish += self.compute_fisher_contribution(seed, verb=verb)/N_it
             
         self.fish = fish
         self.inv_fish = np.linalg.inv(fish)
@@ -590,9 +577,6 @@ class PSpec():
         The Poisson shot-noise can be optionally subtracted. We return the imaginary part of any ell=odd spectra.
         """
         
-        if self.applySinv==None:
-            raise Exception("Must supply S^-1 function to compute unwindowed estimators!")
-
         # Compute inverse Fisher
         if len(fish)!=0:
             self.fish = fish

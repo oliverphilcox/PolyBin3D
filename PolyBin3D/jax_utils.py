@@ -1,5 +1,6 @@
 import jax 
 import jax.numpy as jnp
+import numpy as np
 from functools import partial
 dfloat = jnp.float64
 dcomplex = jnp.complex128
@@ -190,51 +191,56 @@ def pointing_RIC_transpose(map1, mask, mask_GIC, radial_edges, radial_grid, nthr
     return output
     
 def compute_real_harmonics(coordinates, lmax, odd_l, nthreads):
-    """Compute the real spherical harmonics on the coordinate grid."""
+    """Compute the real spherical harmonics on the coordinate grid. This is performed in numpy (not jax) to avoid memory errors."""
     assert lmax >= 1
     Ylms = {}
     
     # Define coordinates (with unit norm)
-    norm = jnp.sqrt(coordinates[0]**2 + coordinates[1]**2 + coordinates[2]**2)
-    xh, yh, zh = jnp.where(norm==0, 0, coordinates/norm)
+    norm = np.sqrt(coordinates[0]**2 + coordinates[1]**2 + coordinates[2]**2)
+    xh = np.zeros_like(norm)
+    yh = np.zeros_like(norm)
+    zh = np.zeros_like(norm)
+    xh[norm!=0] = coordinates[0][norm!=0]/norm[norm!=0]
+    yh[norm!=0] = coordinates[1][norm!=0]/norm[norm!=0]
+    zh[norm!=0] = coordinates[2][norm!=0]/norm[norm!=0]
 
     # Compute spherical harmonics
     if odd_l and lmax >= 1:
-        Ylms[1] = jnp.stack([yh, zh, xh], axis=0)
+        Ylms[1] = np.stack([yh, zh, xh], axis=0)
 
     if lmax >= 2:
-        ylm2 = jnp.stack([
-            6. * xh * yh * jnp.sqrt(1. / 12.),
-            3. * yh * zh * jnp.sqrt(1. / 3.),
+        ylm2 = np.stack([
+            6. * xh * yh * np.sqrt(1. / 12.),
+            3. * yh * zh * np.sqrt(1. / 3.),
             zh**2 - 0.5 * (xh**2 + yh**2),
-            3. * xh * zh * jnp.sqrt(1. / 3.),
-            (3. * xh**2 - 3. * yh**2) * jnp.sqrt(1. / 12.)
+            3. * xh * zh * np.sqrt(1. / 3.),
+            (3. * xh**2 - 3. * yh**2) * np.sqrt(1. / 12.)
         ], axis=0)
         Ylms[2] = ylm2
 
     if odd_l and lmax >= 3:
-        ylm3 = jnp.stack([
-            (45. * xh**2 * yh - 15. * yh**3) * jnp.sqrt(1. / 360.),
-            30. * xh * yh * zh * jnp.sqrt(1. / 60.),
-            (-1.5 * xh**2 * yh - 1.5 * yh**3 + 6. * yh * zh**2) * jnp.sqrt(1. / 6.),
+        ylm3 = np.stack([
+            (45. * xh**2 * yh - 15. * yh**3) * np.sqrt(1. / 360.),
+            30. * xh * yh * zh * np.sqrt(1. / 60.),
+            (-1.5 * xh**2 * yh - 1.5 * yh**3 + 6. * yh * zh**2) * np.sqrt(1. / 6.),
             (-1.5 * xh**2 * zh - 1.5 * yh**2 * zh + zh**3),
-            (-1.5 * xh**3 - 1.5 * xh * yh**2 + 6. * xh * zh**2) * jnp.sqrt(1. / 6.),
-            (15. * xh**2 * zh - 15. * yh**2 * zh) * jnp.sqrt(1. / 60.),
-            (15. * xh**3 - 45. * xh * yh**2) * jnp.sqrt(1. / 360.)
+            (-1.5 * xh**3 - 1.5 * xh * yh**2 + 6. * xh * zh**2) * np.sqrt(1. / 6.),
+            (15. * xh**2 * zh - 15. * yh**2 * zh) * np.sqrt(1. / 60.),
+            (15. * xh**3 - 45. * xh * yh**2) * np.sqrt(1. / 360.)
         ], axis=0)
         Ylms[3] = ylm3
 
     if lmax >= 4:
-        ylm4 = jnp.stack([
-            (420. * xh**3 * yh - 420. * xh * yh**3) * jnp.sqrt(1. / 20160.),
-            (315. * xh**2 * yh * zh - 105. * yh**3 * zh) * jnp.sqrt(1. / 2520.),
-            (-15. * xh**3 * yh - 15. * xh * yh**3 + 90. * xh * yh * zh**2) * jnp.sqrt(1. / 180.),
-            (-7.5 * xh**2 * yh * zh - 7.5 * yh**3 * zh + 10. * yh * zh**3) * jnp.sqrt(1. / 10.),
+        ylm4 = np.stack([
+            (420. * xh**3 * yh - 420. * xh * yh**3) * np.sqrt(1. / 20160.),
+            (315. * xh**2 * yh * zh - 105. * yh**3 * zh) * np.sqrt(1. / 2520.),
+            (-15. * xh**3 * yh - 15. * xh * yh**3 + 90. * xh * yh * zh**2) * np.sqrt(1. / 180.),
+            (-7.5 * xh**2 * yh * zh - 7.5 * yh**3 * zh + 10. * yh * zh**3) * np.sqrt(1. / 10.),
             35. / 8. * zh**4 - 15. / 4. * zh**2 + 3. / 8.,
-            (-15. / 2. * xh**3 * zh - 15. / 2. * xh * yh**2 * zh + 10. * xh * zh**3) * jnp.sqrt(1. / 10.),
-            (-15. / 2. * xh**4 + 45. * xh**2 * zh**2 + 15. / 2. * yh**4 - 45. * yh**2 * zh**2) * jnp.sqrt(1. / 180.),
-            (105. * xh**3 * zh - 315. * xh * yh**2 * zh) * jnp.sqrt(1. / 2520.),
-            (105. * xh**4 - 630. * xh**2 * yh**2 + 105. * yh**4) * jnp.sqrt(1. / 20160.)
+            (-15. / 2. * xh**3 * zh - 15. / 2. * xh * yh**2 * zh + 10. * xh * zh**3) * np.sqrt(1. / 10.),
+            (-15. / 2. * xh**4 + 45. * xh**2 * zh**2 + 15. / 2. * yh**4 - 45. * yh**2 * zh**2) * np.sqrt(1. / 180.),
+            (105. * xh**3 * zh - 315. * xh * yh**2 * zh) * np.sqrt(1. / 2520.),
+            (105. * xh**4 - 630. * xh**2 * yh**2 + 105. * yh**4) * np.sqrt(1. / 20160.)
         ], axis=0)
         Ylms[4] = ylm4
 

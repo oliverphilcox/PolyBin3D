@@ -21,19 +21,19 @@ base = pb.PolyBin3D(boxsize, # dimensions of box
                     boxcenter=[0,0,0], # center of simulation box
                     pixel_window='tsc', # pixel window function
                     backend='fftw', # backend for performing FFTs ('fftw' or 'mkl' for cpu, 'jax' for gpu)
-                    nthreads=4, # number of CPUs for performing FFTs (only applies to 'fftw' backend)
+                    nthreads=4, # number of CPUs to parallelize across (not used for jax code)
                     sightline='global') # redshift-space axis                    
 
 # Load power spectrum class
 pspec = pb.PSpec(base, 
                  k_bins, # k-bin edges
-                 lmax, # Legendre multipoles
-                 mask, # real-space mask
-                 applySinv, # filter to apply to data
+                 lmax=lmax, # Legendre multipoles
+                 mask=mask, # real-space mask
+                 applySinv=None, # filter to apply to data
                 )
 
 # Compute Fisher matrix and shot-noise using Monte Carlo simulations (should usually be parallelized)
-fish, shot_num = pspec.compute_fisher(10, N_cpus=1, verb=True)
+fish, shot_num = pspec.compute_fisher(10, verb=True)
 
 # Compute windowed power spectra
 Pk_ideal = pspec.Pk_ideal(data) 
@@ -47,13 +47,13 @@ Bispectra can be computed similarly:
 # Load bispectrum class
 bspec = pb.BSpec(base, 
                  k_bins, # k-bin edges
-                 lmax, # Legendre multipoles
-                 mask, # real-space mask
-                 applySinv, # filter to apply to data
+                 lmax=lmax, # Legendre multipoles
+                 mask=mask, # real-space mask
+                 applySinv=None, # filter to apply to data
                 )
 
 # Compute Fisher matrix using Monte Carlo simulations (should usually be parallelized)
-fish = bspec.compute_fisher(10, N_cpus=1, verb=True)
+fish = bspec.compute_fisher(10, verb=True)
 
 # Compute windowed bispectra
 Bk_ideal = bspec.Bk_ideal(data) 
@@ -76,9 +76,8 @@ Further details are described in the tutorials, which describe
 ## Dependencies
 - Python 2/3
 - numpy, scipy
-- fftw *or* mkl_fft [for FFTs]
-- Nbodykit [not required, but useful for testing]
-- JAX (optional, for GPU acceleration, see [here](https://jax.readthedocs.io/en/latest/installation.html) for installation instructions.)
+- fftw *or* mkl_fft [for FFTs on the CPU] *or* JAX [for GPU computations]
+- nbodykit [not required, but useful for testing]
 
 ## References
 **Code references:**
