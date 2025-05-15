@@ -306,11 +306,11 @@ class PSpec():
                 # Apply S^-1 P Cov P^dagger S^-dagger in order to compute covariances
                 if self.const_mask:
                     if real:
-                        PdSid_map = self.mask_mean*self.applySinv_transpose(input_map, input_type='real', output_type='fourier')
+                        Sid_map = self.applySinv_transpose(input_map, input_type='real', output_type='fourier')
                     else:
-                        PdSid_map = self.mask_mean*self.applySinv_transpose(input_map, input_type='fourier', output_type='fourier')
-                    PCPdSid_map = self.mask_mean*self.base.apply_xi(PdSid_map, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='fourier')
-                    return self.applySinv(PCPSid_map, input_type='fourier', output_type='fourier')
+                        Sid_map = self.applySinv_transpose(input_map, input_type='fourier', output_type='fourier')
+                    CSid_map = self.mask_mean**2*self.base.apply_xi(Sid_map, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='fourier') + self.mask_mean*Sid_map
+                    return self.applySinv(CSid_map, input_type='fourier', output_type='fourier')
                 else:
                     if real:
                         Sid_map = self.applySinv_transpose(input_map, input_type='real', output_type='real')
@@ -319,8 +319,8 @@ class PSpec():
                     PdSid_map_real = self.apply_pointing(Sid_map, transpose=True)
                     PdSid_map = self.base.to_fourier(PdSid_map_real)
                     CPdSid_map = self.base.apply_xi(PdSid_map, PdSid_map_real, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='real')
-                    PCPdSid_map = self.apply_pointing(CPdSid_map, transpose=False)
-                    out = self.applySinv(PCPdSid_map, input_type='real', output_type='fourier')
+                    CovSid_map = self.apply_pointing(CPdSid_map, transpose=False) + self.base.map_utils.prod_real(Sid_map, self.mask_shot)
+                    out = self.applySinv(CovSid_map, input_type='real', output_type='fourier')
                 return out
                 
         # Filter map by A^-1 and S^-1 P
