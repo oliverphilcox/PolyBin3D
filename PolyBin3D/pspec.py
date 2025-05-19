@@ -615,7 +615,8 @@ class PSpec():
         assert filtering in ['ideal','Sinv'], "Unknown filtering option supplied!"
 
         # Check input data type and convert to float64 if necessary
-        assert type(data[0,0,0]) in [np.float32, np.float64], "Data must be of type float32 or float64!"
+        if not self.base.backend=='jax':
+            assert type(data[0,0,0]) in [np.float32, np.float64], "Data must be of type float32 or float64!"
         if type(data[0,0,0])==np.float32: 
             data = np.asarray(data, order='C', dtype=np.float64)
 

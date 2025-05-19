@@ -50,6 +50,8 @@ class PolyBin3D():
         else:
             assert len(gridsize)==3, "Need to specify n_x, n_y, n_z gridsize"
             self.gridsize = np.asarray(gridsize,dtype=int)
+        if real_fft and gridsize[2]%2!=0:
+            raise Exception("Last dimension of grid must be even for real-to-complex FFTs.")
 
         assert self.sightline in ['local','global'], "Sight-line must be 'local' or 'global'"
         if self.sightline=='global':
