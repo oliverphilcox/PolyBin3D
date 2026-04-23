@@ -3,6 +3,7 @@
 
 import numpy as np
 import multiprocessing as mp
+from .base import LazyYlm
 import tqdm
 from scipy.special import legendre
 from scipy.interpolate import interp1d
@@ -131,7 +132,7 @@ class BSpec():
             assert not self.add_GIC, "Radial integral constraint imposes global integral constraint automatically!"
             assert hasattr(self,'mask_IC'), "Need to supply mask_IC!"
             assert len(radial_bins_RIC)>0, "Radial bins need to be supplied for radial integral constraint!"
-            print("Accounting for radial integral constraint acrosss %d bins"%(len(radial_bins_RIC)-1))
+            print("Accounting for radial integral constraint across %d bins"%(len(radial_bins_RIC)-1))
             self.base.modr_grid = np.sqrt(self.base.r_grids[0]**2.+self.base.r_grids[1]**2.+self.base.r_grids[2]**2.)
             self.radial_bins_RIC = radial_bins_RIC
           
@@ -156,15 +157,16 @@ class BSpec():
             self.invPk0 = self.base.invPk0_grid
                                                  
         # Define spherical harmonics in real-space [for computing bispectrum multipoles]
+        # Uses lazy evaluation to avoid storing full Ylm arrays.
         if self.base.sightline=='local' and self.lmax>0:
-            print("Generating spherical harmonics")
-            self.Ylm_real = self.base.utils.compute_real_harmonics(np.asarray(self.base.r_grids), self.lmax, False, self.base.nthreads)
+            print("Generating spherical harmonics (lazy)")
+            self.Ylm_real = LazyYlm(self.base.r_grids, self.lmax, False, self.base.utils, self.base.nthreads)
         else:
             self.Ylm_real = None
-        
+
         # Define spherical harmonics in Fourier-space [needed for normalizations]
         if self.lmax>0:
-            self.Ylm_fourier = self.base.utils.compute_real_harmonics(np.asarray(self.base.k_grids), self.lmax, False, self.base.nthreads)
+            self.Ylm_fourier = LazyYlm(self.base.k_grids, self.lmax, False, self.base.utils, self.base.nthreads)
         else:
             self.Ylm_fourier = None
             
@@ -274,7 +276,7 @@ class BSpec():
 
                             elif bin1==bin2 and bin1==bin3:
                                 self.sym_factor.append(2.*(1.+2.*self.base.map_utils.sum_pair(bins[bin3],bin23_l[bin3])/self.base.map_utils.sum_triplet(bins[bin3],bins[bin3],bins[bin3])))
-
+        
         self.sym_factor = np.asarray(self.sym_factor)
         assert len(self.sym_factor)==self.N_bins
         
@@ -426,17 +428,21 @@ class BSpec():
             return out
     
     ### OPTIMAL ESTIMATOR
-    def Bk_numerator(self, data, include_linear_term=True, verb=False):
+    def Bk_numerator(self, data, data2 = None, data3 = None, include_linear_term=True, verb=False):
         """
         Compute the numerator of the unwindowed bispectrum estimator, using the custom weighting function S^-1.
 
-        We can optionally include a linear term to reduce the large-scale variance.
+        We can optionally include a linear term to reduce the large-scale variance. 
+        
+        If data2 or data3 are set, we compute the cross-bispectrum between the three datasets.
         """
         if not self.const_mask:
             assert data.shape == self.mask.shape, "Data must have same shape as the mask!"
+            if data2 is not None: assert data2.shape == self.mask.shape, "Data2 must have same shape as the mask!"
+            if data3 is not None: assert data3.shape == self.mask.shape, "Data3 must have same shape as the mask!"
         
         # Send to wrapper
-        return self._compute_bk_numerator(data, include_linear_term=include_linear_term, filtering='Sinv', verb=verb)
+        return self._compute_bk_numerator(data, data2=data2, data3=data3, include_linear_term=include_linear_term, filtering='Sinv', verb=verb)
 
     def compute_fisher_contribution(self, seed, verb=False):
         """
@@ -460,13 +466,10 @@ class BSpec():
         assert len(np.asarray(Pk_cov).shape)==2, "Pk should contain k and P_0 (and optionally P_2, P_4) columns"
         assert len(Pk_cov) in [2,3,4], "Pk should contain k and P_0 (and optionally P_2, P_4) columns"
         if (len(Pk_cov)-2)*2>self.lmax and self.base.sightline=='local':
-            print("Regenerating spherical harmonics for lmax=%d"%((len(Pk_cov)-2)*2))
-            self.Ylm_fourier = self.base.utils.compute_real_harmonics(np.asarray(self.base.k_grids), (len(Pk_cov)-2)*2, False, self.base.nthreads)
-            self.Ylm_real = self.base.utils.compute_real_harmonics(np.asarray(self.base.r_grids), (len(Pk_cov)-2)*2, False, self.base.nthreads)
-            # Copy to jax if necessary
-            if self.base.backend=='jax':
-                self.Ylm_fourier = {k: self.base.np.array(self.Ylm_fourier[k]) for k in self.Ylm_fourier.keys()}
-                self.Ylm_real = {k: self.base.np.array(self.Ylm_real[k]) for k in self.Ylm_real.keys()}
+            new_lmax = (len(Pk_cov)-2)*2
+            print("Regenerating spherical harmonics for lmax=%d (lazy)"%new_lmax)
+            self.Ylm_fourier = LazyYlm(self.base.k_grids, new_lmax, False, self.base.utils, self.base.nthreads)
+            self.Ylm_real = LazyYlm(self.base.r_grids, new_lmax, False, self.base.utils, self.base.nthreads)
             
         return self._compute_fisher(seed, verb=verb, compute_cov=True, Pk_cov=Pk_cov)
     
@@ -675,6 +678,224 @@ class BSpec():
 
         return fish
     
+    def _compute_fisher_test(self, seed, maskA, maskB, maskC, verb=False):
+        """Internal function to compute the contribution to the fiber-collision Fisher matrix for the simplest ell=0 case."""
+ 
+        # Compute symmetry factor, if not already present
+        if not hasattr(self, 'sym_factor'):
+            self._compute_symmetry_factor()
+        assert not self.const_mask
+        assert not self.add_RIC
+        assert not self.add_GIC
+        
+        # Initialize output
+        fish = np.zeros((self.N_bins,self.N_bins))
+        
+        def apply_filter(input_map, mask):
+            """Apply S^-1 P to a map."""
+            return self.applySinv(self.base.map_utils.prod_real(input_map, mask), input_type='real', output_type='fourier')
+                
+        # Define Q map code
+        def compute_Q(weighting, a_fourier1, a_real1, a_fourier2, a_real2):
+            """
+            Assemble and return the Q [ = partial_alpha zeta_ijk (weighting a)_j (weighting a)_k] maps in Fourier-space, given a weighting scheme.
+
+            The outputs are Q_alpha arrays."""
+
+            # Filter maps appropriately
+            if weighting=='Sinv':
+                # Compute S^-1 P a
+                weighted_map_fourier1A = apply_filter(a_real1, maskA)
+                weighted_map_fourier2A = apply_filter(a_real2, maskA)
+                weighted_map_fourier1B = apply_filter(a_real1, maskB)
+                weighted_map_fourier2B = apply_filter(a_real2, maskB)
+
+                # Define real-space map where necessary
+                if self.base.sightline=='local' and self.lmax>0:
+                    weighted_map_real1A = self.base.to_real(weighted_map_fourier1A)
+                    weighted_map_real2A = self.base.to_real(weighted_map_fourier2A)
+                    weighted_map_real1B = self.base.to_real(weighted_map_fourier1B)
+                    weighted_map_real2B = self.base.to_real(weighted_map_fourier2B)
+                
+                # Compute g_b maps
+                if verb: print("Computing g_{b,0}(r) maps")
+                g_b0_maps1A = self.base.real_zeros(self.Nk_squeeze, numpy=True)
+                g_b0_maps2A = self.base.real_zeros(self.Nk_squeeze, numpy=True)
+                g_b0_maps1B = self.base.real_zeros(self.Nk_squeeze, numpy=True)
+                g_b0_maps2B = self.base.real_zeros(self.Nk_squeeze, numpy=True)
+                for b in range(self.Nk_squeeze):
+                    g_b0_maps1A[b] = self.base.to_real(self.base.map_utils.fourier_filter(weighted_map_fourier1A, 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+                    g_b0_maps2A[b] = self.base.to_real(self.base.map_utils.fourier_filter(weighted_map_fourier2A, 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+                    g_b0_maps1B[b] = self.base.to_real(self.base.map_utils.fourier_filter(weighted_map_fourier1B, 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+                    g_b0_maps2B[b] = self.base.to_real(self.base.map_utils.fourier_filter(weighted_map_fourier2B, 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+
+                # Define Legendre L_ell(k.n) weighting for all ell
+                if self.base.sightline=='local' and self.lmax>0:
+                    leg_maps1A = self.base.complex_zeros(self.Nl-1, numpy=True)
+                    leg_maps2A = self.base.complex_zeros(self.Nl-1, numpy=True)
+                    leg_maps1B = self.base.complex_zeros(self.Nl-1, numpy=True)
+                    leg_maps2B = self.base.complex_zeros(self.Nl-1, numpy=True)
+                    for ell in range(2, self.lmax+1, 2):
+                        leg_maps1A[ell//2-1] = self.base.apply_fourier_harmonics(weighted_map_real1A, self.Ylm_real[ell], self.Ylm_fourier[ell])
+                        leg_maps2A[ell//2-1] = self.base.apply_fourier_harmonics(weighted_map_real2A, self.Ylm_real[ell], self.Ylm_fourier[ell])
+                        leg_maps1B[ell//2-1] = self.base.apply_fourier_harmonics(weighted_map_real1B, self.Ylm_real[ell], self.Ylm_fourier[ell])
+                        leg_maps2B[ell//2-1] = self.base.apply_fourier_harmonics(weighted_map_real2B, self.Ylm_real[ell], self.Ylm_fourier[ell])
+            
+            else:
+                # Compute A^-1 a
+                weighted_map_fourier1 = self.base.applyAinv(a_fourier1, input_type='fourier', output_type='fourier')
+                weighted_map_fourier2 = self.base.applyAinv(a_fourier2, input_type='fourier', output_type='fourier')
+
+                # Define real-space map where necessary
+                if self.base.sightline=='local' and self.lmax>0:
+                    weighted_map_real1 = self.base.to_real(weighted_map_fourier1)
+                    weighted_map_real2 = self.base.to_real(weighted_map_fourier2)
+            
+                # Compute g_b maps
+                if verb: print("Computing g_{b,0}(r) maps")
+                g_b0_maps1 = self.base.real_zeros(self.Nk_squeeze, numpy=True)
+                g_b0_maps2 = self.base.real_zeros(self.Nk_squeeze, numpy=True)
+                for b in range(self.Nk_squeeze):
+                    g_b0_maps1[b] = self.base.to_real(self.base.map_utils.fourier_filter(weighted_map_fourier1, 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+                    g_b0_maps2[b] = self.base.to_real(self.base.map_utils.fourier_filter(weighted_map_fourier2, 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+
+                # Define Legendre L_ell(k.n) weighting for all ell
+                if self.base.sightline=='local' and self.lmax>0:
+                    leg_maps1 = self.base.complex_zeros(self.Nl-1, numpy=True)
+                    leg_maps2 = self.base.complex_zeros(self.Nl-1, numpy=True)
+                    for ell in range(2, self.lmax+1, 2):
+                        leg_maps1[ell//2-1] = self.base.apply_fourier_harmonics(weighted_map_real1, self.Ylm_real[ell], self.Ylm_fourier[ell])
+                        leg_maps2[ell//2-1] = self.base.apply_fourier_harmonics(weighted_map_real2, self.Ylm_real[ell], self.Ylm_fourier[ell])
+            # Iterate over quadratic pairs of bins, starting with longer side
+            for binB in range(self.Nk_squeeze):
+                if verb: print("Computing matrix for k-bin %d of %d"%(binB+1,self.Nk_squeeze))
+
+                if weighting=='Sinv':
+                    # Compute all g_bB_l maps
+                    if self.lmax>0:
+                        g_bBl_maps1A = self.base.real_zeros(self.Nl-1, numpy=True)
+                        g_bBl_maps2A = self.base.real_zeros(self.Nl-1, numpy=True)
+                        g_bBl_maps1B = self.base.real_zeros(self.Nl-1, numpy=True)
+                        g_bBl_maps2B = self.base.real_zeros(self.Nl-1, numpy=True)
+                        for ell in range(2,self.lmax+1,2):
+                            if self.base.sightline=='global':
+                                g_bBl_maps1A[ell//2-1] = self.base.to_real(self.base.map_utils.fourier_filter(weighted_map_fourier1A, ell, self.k_bins_squeeze[binB], self.k_bins_squeeze[binB+1]))
+                                g_bBl_maps2A[ell//2-1] = self.base.to_real(self.base.map_utils.fourier_filter(weighted_map_fourier2A, ell, self.k_bins_squeeze[binB], self.k_bins_squeeze[binB+1]))
+                                g_bBl_maps1B[ell//2-1] = self.base.to_real(self.base.map_utils.fourier_filter(weighted_map_fourier1B, ell, self.k_bins_squeeze[binB], self.k_bins_squeeze[binB+1]))
+                                g_bBl_maps2B[ell//2-1] = self.base.to_real(self.base.map_utils.fourier_filter(weighted_map_fourier2B, ell, self.k_bins_squeeze[binB], self.k_bins_squeeze[binB+1]))
+                            else:
+                                g_bBl_maps1A[ell//2-1] = self.base.to_real(self.base.map_utils.fourier_filter(leg_maps1A[ell//2-1], 0, self.k_bins_squeeze[binB], self.k_bins_squeeze[binB+1]))
+                                g_bBl_maps2A[ell//2-1] = self.base.to_real(self.base.map_utils.fourier_filter(leg_maps2A[ell//2-1], 0, self.k_bins_squeeze[binB], self.k_bins_squeeze[binB+1]))
+                                g_bBl_maps1B[ell//2-1] = self.base.to_real(self.base.map_utils.fourier_filter(leg_maps1B[ell//2-1], 0, self.k_bins_squeeze[binB], self.k_bins_squeeze[binB+1]))
+                                g_bBl_maps2B[ell//2-1] = self.base.to_real(self.base.map_utils.fourier_filter(leg_maps2B[ell//2-1], 0, self.k_bins_squeeze[binB], self.k_bins_squeeze[binB+1]))
+                
+                else:
+                    # Compute all g_bB_l maps
+                    if self.lmax>0:
+                        g_bBl_maps1 = self.base.real_zeros(self.Nl-1, numpy=True)
+                        g_bBl_maps2 = self.base.real_zeros(self.Nl-1, numpy=True)
+                        for ell in range(2,self.lmax+1,2):
+                            if self.base.sightline=='global':
+                                g_bBl_maps1[ell//2-1] = self.base.to_real(self.base.map_utils.fourier_filter(weighted_map_fourier1, ell, self.k_bins_squeeze[binB], self.k_bins_squeeze[binB+1]))
+                                g_bBl_maps2[ell//2-1] = self.base.to_real(self.base.map_utils.fourier_filter(weighted_map_fourier2, ell, self.k_bins_squeeze[binB], self.k_bins_squeeze[binB+1]))
+                            else:
+                                g_bBl_maps1[ell//2-1] = self.base.to_real(self.base.map_utils.fourier_filter(leg_maps1[ell//2-1], 0, self.k_bins_squeeze[binB], self.k_bins_squeeze[binB+1]))
+                                g_bBl_maps2[ell//2-1] = self.base.to_real(self.base.map_utils.fourier_filter(leg_maps2[ell//2-1], 0, self.k_bins_squeeze[binB], self.k_bins_squeeze[binB+1]))
+
+                # Iterate over shorter side
+                for binA in range(binB+1):
+
+                    if weighting=='Sinv':
+                    
+                        # Find which elements of the Q3 matrix this pair is used for (with ordering)
+                        these_ind = np.where((self.all_bins[:,2]==binB)&(self.all_bins[:,0]==binA))[0]
+                        if len(these_ind)==0: 
+                            continue
+
+                        for l in range(0, self.lmax+1, 2):
+                            # Compute FT[g_{0, bA},g_{ell, bB}] 
+                            if l==0:
+                                ft_ABl = self.base.to_fourier(self.base.map_utils.prod_real_diff(g_b0_maps1A[binA],g_b0_maps1B[binB],g_b0_maps2A[binA],g_b0_maps2B[binB]))
+                                ft_ABl += self.base.to_fourier(self.base.map_utils.prod_real_diff(g_b0_maps1B[binA],g_b0_maps1A[binB],g_b0_maps2B[binA],g_b0_maps2A[binB]))
+                            else:
+                                ft_ABl = self.base.to_fourier(self.base.map_utils.prod_real_diff(g_b0_maps1A[binA],g_bBl_maps1B[l//2-1],g_b0_maps2A[binA],g_bBl_maps2B[l//2-1]))
+                                ft_ABl += self.base.to_fourier(self.base.map_utils.prod_real_diff(g_b0_maps1B[binA],g_bBl_maps1A[l//2-1],g_b0_maps2B[binA],g_bBl_maps2A[l//2-1]))
+                        
+                        # Iterate over these elements and add to the output arrays
+                        for ii in these_ind[self.all_bins[these_ind,3]==l]:
+                            fish[ii] = self.base.integrator.integrate_row(ft_ABl, Q_Ainv, self.k_bins_squeeze[self.all_bins[ii,1]], self.k_bins_squeeze[self.all_bins[ii,1]+1])
+                            
+                    elif weighting=='Ainv':
+
+                        # Find which elements of the Q3 matrix this pair is used for (with ordering)
+                        these_ind1 = np.where((self.all_bins[:,0]==binA)&(self.all_bins[:,1]==binB))[0]
+                        these_ind2 = np.where((self.all_bins[:,1]==binA)&(self.all_bins[:,2]==binB))[0]
+                        these_ind3 = np.where((self.all_bins[:,2]==binB)&(self.all_bins[:,0]==binA))[0]
+                        if len(these_ind1)+len(these_ind2)+len(these_ind3)==0: 
+                            continue
+                    
+                        # Compute FT[g_{0, bA},g_{ell, bB}] 
+                        ft_ABl = np.empty((self.Nl, self.base.modk_grid.shape[0], self.base.modk_grid.shape[1], self.base.modk_grid.shape[2]), dtype=np.complex128)
+                        ft_ABl[0] = self.base.to_fourier(self.base.map_utils.prod_real_diff(g_b0_maps1[binA],g_b0_maps1[binB],g_b0_maps2[binA],g_b0_maps2[binB]))
+                        # Repeat for higher ell
+                        for l in range(2, self.lmax+1, 2):
+                            ft_ABl[l//2] = self.base.to_fourier(self.base.map_utils.prod_real_diff(g_b0_maps1[binA],g_bBl_maps1[l//2-1],g_b0_maps2[binA],g_bBl_maps2[l//2-1]))
+                        
+                        def add_Q_element(binC_index, these_ind, largest_l=True):
+                            # Iterate over these elements and add to the output arrays
+                            for ii in these_ind:
+                                binC = self.all_bins[ii,binC_index]
+                                l = self.all_bins[ii,3]
+
+                                # Monopole
+                                if l==0 or (l>0 and not largest_l):
+                                    Q_Ainv[ii] += self.base.map_utils.fourier_filter(ft_ABl[l//2], 0, self.k_bins_squeeze[binC], self.k_bins_squeeze[binC+1])
+                                else:
+                                    # Apply legendre to external leg
+                                    if self.base.sightline=='global':
+                                        # Work in Fourier-space for global line-of-sight
+                                        Q_Ainv[ii] += self.base.map_utils.fourier_filter(ft_ABl[0],  l, self.k_bins_squeeze[binC], self.k_bins_squeeze[binC+1])
+                                    else:
+                                        binC_ftAB = self.base.map_utils.fourier_filter(ft_ABl[0], 0, self.k_bins_squeeze[binC], self.k_bins_squeeze[binC+1])
+                                        # Work in real-space for Yamamoto line-of-sight
+                                        real_map = self.base.apply_real_harmonics(binC_ftAB, self.Ylm_real[l], self.Ylm_fourier[l])
+                                        if self.const_mask:
+                                            Q_Ainv[ii] += self.base.to_fourier(real_map)
+                                        else:
+                                            Q_Ainv[ii] += self.base.to_fourier(real_map)              
+                                            
+                        add_Q_element(2, these_ind1) 
+                        add_Q_element(0, these_ind2)
+                        add_Q_element(1, these_ind3)
+                        
+        # Set up temporary array
+        Q_Ainv = np.zeros((self.N_bins,self.base.modk_grid.shape[0],self.base.modk_grid.shape[1],self.base.modk_grid.shape[2]),dtype=np.complex128)
+        if verb: print("Allocating %.2f GB of memory"%(Q_Ainv.nbytes/1024./1024./1024.))    
+
+        # Compute a random realization with known power spectrum
+        if verb: print("Generating GRFs")
+        a_map_fourier1 = self.base.generate_data(seed=seed+int(1e7), output_type='fourier')
+        a_map_fourier2 = self.base.generate_data(seed=seed+int(2e7), output_type='fourier')
+        
+        a_map_real1 = self.base.to_real(a_map_fourier1)
+        a_map_real2 = self.base.to_real(a_map_fourier2)
+        
+        if verb: print("\n# Computing Q[A^-1.a] maps")
+        compute_Q('Ainv', a_map_fourier1, a_map_real1, a_map_fourier2, a_map_real2)
+        
+        # Add S^-1.P weighting to A^-1 maps
+        for i in range(self.N_bins):
+            Q_Ainv[i] = apply_filter(self.base.to_real(Q_Ainv[i]), maskC)
+        
+        # Compute Q maps and form the Fisher matrix
+        if verb: print("\n# Computing Q[S^-1.P.a] maps")
+        compute_Q('Sinv', a_map_fourier1, a_map_real1, a_map_fourier2, a_map_real2)
+        
+        # Add normalization and return output
+        fish = 1./2.*fish*self.base.volume/self.base.gridsize.prod()**2/np.outer(self.sym_factor,self.sym_factor)
+
+        return fish
+    
     def compute_fisher(self, N_it, verb=False):
         """
         Compute the Fisher matrix using N_it realizations. Since the calculation is already parallelized, this is run in serial.
@@ -860,15 +1081,16 @@ class BSpec():
         else:
             return shot_num_quadratic - 2*shot_num_cubic
 
-    def Bk_unwindowed(self, data, fish=[], include_linear_term=True, verb=False):
+    def Bk_unwindowed(self, data, data2=None, data3=None, fish=[], include_linear_term=True, verb=False):
         """
         Compute the unwindowed bispectrum estimator, using the custom weighting function S^-1.
 
         Note that the Fisher matrix must be computed before this is run, or it can be supplied separately.
         
         We can optionally drop the linear term (at the cost of slightly enhanced large-scale variance).
-        """
         
+        If data2 or data3 are set, we compute the cross-bispectrum between the three datasets.
+        """
         # Compute inverse Fisher
         if len(fish)!=0:
             self.fish = fish
@@ -878,7 +1100,7 @@ class BSpec():
             raise Exception("Need to compute Fisher matrix first!")
         
         # Compute numerator
-        Bk_num = self.Bk_numerator(data, include_linear_term=include_linear_term, verb=verb)
+        Bk_num = self.Bk_numerator(data, data2=data2, data3=data3, include_linear_term=include_linear_term, verb=verb)
 
         # Apply normalization and restructure
         Bk_out = np.matmul(self.inv_fish,Bk_num)
@@ -892,9 +1114,20 @@ class BSpec():
 
         return Bk_dict
     
-    def _compute_bk_numerator(self, data, include_linear_term=True, filtering='ideal', verb=False):
-        """Internal function to compute the bispectrum numerator. This is used by the Bk_numerator and Bk_numerator_ideal functions."""
+    def _compute_bk_numerator(self, data, data2=None, data3=None, include_linear_term=True, filtering='ideal', verb=False):
+        """Internal function to compute the bispectrum numerator. This is used by the Bk_numerator and Bk_numerator_ideal functions.
+        
+        If data2 and data3 are set, we compute the symmetrized cross-bispectrum."""
         assert filtering in ['ideal','Sinv'], "Unknown filtering option supplied!"
+        
+        if data2 is not None:
+            assert data3 is not None, "If data2 is set, data3 must be set as well!"
+        if data3 is not None:
+            assert data2 is not None, "If data2 is set, data3 must be set as well!"
+            assert not include_linear_term, "Cannot include the linear term for cross-bispectra!"
+            cross_spec = True
+        else:
+            cross_spec = False
         
         if (not hasattr(self, 'preload')) and include_linear_term:
             raise Exception("Need to generate or specify bias simulations!")
@@ -902,38 +1135,68 @@ class BSpec():
         # Check input data type and convert to float64 if necessary
         if not self.base.backend=='jax':
             assert type(data[0,0,0]) in [np.float32, np.float64], "Data must be of type float32 or float64!"
+            if cross_spec:
+                assert type(data2[0,0,0]) in [np.float32, np.float64], "Data2 must be of type float32 or float64!"
+                assert type(data3[0,0,0]) in [np.float32, np.float64], "Data3 must be of type float32 or float64!"
         if type(data[0,0,0])==np.float32: 
             data = np.asarray(data, order='C', dtype=np.float64)
-
+            if cross_spec:
+                data2 = np.asarray(data2, order='C', dtype=np.float64)
+                data3 = np.asarray(data3, order='C', dtype=np.float64)
+                
         # Compute symmetry factor if necessary
         if not hasattr(self, 'sym_factor'):
             self._compute_symmetry_factor()
-        
+
         # Apply filtering and transform to Fourier-space, optionally removing the pixel window function
         if self.base.pixel_window!='none':
             
             # Transform to Fourier-space
             data_fourier = self.base.map_utils.div_fourier(self.base.to_fourier(data), self.base.pixel_window_grid)
-                        
+            if cross_spec:
+                data_fourier2 = self.base.map_utils.div_fourier(self.base.to_fourier(data2), self.base.pixel_window_grid)
+                data_fourier3 = self.base.map_utils.div_fourier(self.base.to_fourier(data3), self.base.pixel_window_grid)
+                
             if filtering=='ideal':
                 # Filter by 1/P_fid
                 Sinv_data_fourier = self.base.map_utils.prod_fourier(data_fourier, self.invPk0)/self.cube_mask_mean**(1./3.)
+                if cross_spec:
+                    Sinv_data_fourier2 = self.base.map_utils.prod_fourier(data_fourier2, self.invPk0)/self.cube_mask_mean**(1./3.)
+                    Sinv_data_fourier3 = self.base.map_utils.prod_fourier(data_fourier3, self.invPk0)/self.cube_mask_mean**(1./3.)
+                    
             elif filtering=='Sinv':
                 Sinv_data_fourier = self.applySinv(data_fourier, input_type='fourier', output_type='fourier')
+                if cross_spec:
+                    Sinv_data_fourier2 = self.applySinv(data_fourier2, input_type='fourier', output_type='fourier')
+                    Sinv_data_fourier3 = self.applySinv(data_fourier3, input_type='fourier', output_type='fourier')
         
         else:
             if filtering=='ideal':
                 # Filter by 1/P_fid
                 Sinv_data_fourier = self.base.map_utils.prod_fourier(self.base.to_fourier(data), self.invPk0)/self.cube_mask_mean**(1./3.)
+                if cross_spec:
+                    Sinv_data_fourier2 = self.base.map_utils.prod_fourier(self.base.to_fourier(data2), self.invPk0)/self.cube_mask_mean**(1./3.)
+                    Sinv_data_fourier3 = self.base.map_utils.prod_fourier(self.base.to_fourier(data3), self.invPk0)/self.cube_mask_mean**(1./3.)
+            
             elif filtering=='Sinv':
                 Sinv_data_fourier = self.applySinv(data, input_type='real', output_type='fourier')
-         
+                if cross_spec:
+                    Sinv_data_fourier2 = self.applySinv(data2, input_type='real', output_type='fourier')
+                    Sinv_data_fourier3 = self.applySinv(data3, input_type='real', output_type='fourier')
+        
         # Store the real-space map if necessary
         if (self.base.sightline=='local' and self.lmax>0):
             Sinv_data_real = self.base.to_real(Sinv_data_fourier)
-        
+            if cross_spec:
+                Sinv_data_real2 = self.base.to_real(Sinv_data_fourier2)
+                Sinv_data_real3 = self.base.to_real(Sinv_data_fourier3)
+
         # Compute g_{b,l} maps
         g_bl_maps = self.base.real_zeros((self.Nl,self.Nk_squeeze), numpy=True)
+        if cross_spec:
+            g_bl_maps2 = self.base.real_zeros((self.Nl,self.Nk_squeeze), numpy=True)
+            g_bl_maps3 = self.base.real_zeros((self.Nl,self.Nk_squeeze), numpy=True)
+
         if verb: print("")
         for l in range(0, self.lmax+1, 2):
 
@@ -943,21 +1206,36 @@ class BSpec():
                 # Compute monopole
                 for b in range(self.Nk_squeeze):
                     g_bl_maps[0,b] = self.base.to_real(self.base.map_utils.fourier_filter(Sinv_data_fourier, 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
-
+                    if cross_spec:
+                        g_bl_maps2[0,b] = self.base.to_real(self.base.map_utils.fourier_filter(Sinv_data_fourier2, 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+                        g_bl_maps3[0,b] = self.base.to_real(self.base.map_utils.fourier_filter(Sinv_data_fourier3, 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+                    
             elif self.base.sightline=='global':
                 # Compute higher multipoles, adding L_l(k.n) factor
                 for b in range(self.Nk_squeeze):
                     g_bl_maps[l//2,b] = self.base.to_real(self.base.map_utils.fourier_filter(Sinv_data_fourier, l, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+                    if cross_spec:
+                        g_bl_maps2[l//2,b] = self.base.to_real(self.base.map_utils.fourier_filter(Sinv_data_fourier2, l, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+                        g_bl_maps3[l//2,b] = self.base.to_real(self.base.map_utils.fourier_filter(Sinv_data_fourier3, l, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
     
             else:
                 # Compute Legendre map using spherical harmonics
                 leg_map = self.base.apply_fourier_harmonics(Sinv_data_real, self.Ylm_real[l], self.Ylm_fourier[l])
+                if cross_spec:
+                    leg_map2 = self.base.apply_fourier_harmonics(Sinv_data_real2, self.Ylm_real[l], self.Ylm_fourier[l])
+                    leg_map3 = self.base.apply_fourier_harmonics(Sinv_data_real3, self.Ylm_real[l], self.Ylm_fourier[l])
                 for b in range(self.Nk_squeeze):
                     g_bl_maps[l//2,b] = self.base.to_real(self.base.map_utils.fourier_filter(leg_map, 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+                    if cross_spec:
+                        g_bl_maps2[l//2,b] = self.base.to_real(self.base.map_utils.fourier_filter(leg_map2, 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
+                        g_bl_maps3[l//2,b] = self.base.to_real(self.base.map_utils.fourier_filter(leg_map3, 0, self.k_bins_squeeze[b], self.k_bins_squeeze[b+1]))
             
         # Compute numerator
         if verb: print("Computing cubic term")
-        B3_num = self.base.utils.assemble_b3(g_bl_maps, self.all_bins, self.base.nthreads)
+        if cross_spec:
+            B3_num = self.base.utils.assemble_b3_asym(g_bl_maps, g_bl_maps2, g_bl_maps3, self.all_bins, self.base.nthreads)
+        else:
+            B3_num = self.base.utils.assemble_b3(g_bl_maps, self.all_bins, self.base.nthreads)
         
         # Compute b_1 part of cubic estimator, averaging over simulations
         B1_num = np.zeros(self.N_bins)
@@ -983,18 +1261,22 @@ class BSpec():
         return Bk_num
 
     ### IDEAL ESTIMATOR
-    def Bk_numerator_ideal(self, data, verb=False):
+    def Bk_numerator_ideal(self, data, data2=None, data3=None, verb=False):
         """Compute the numerator of the idealized bispectrum estimator, weighting by 1/P_fid(k) within each bin. 
 
         The estimator does *not* use the mask or S_inv weighting schemes, and does not remove the linear term (which vanishes under ideal circumstances). It also applies only for even ell.
 
         This can compute the ideal bispectrum of simulation volumes, or, for suitably normalized input, the FKP bispectrum.
+        
+        If data2 or data3 are set, we compute the cross-bispectrum between the three datasets.
         """
         if not self.const_mask:
             assert data.shape == self.mask.shape, "Data must have same shape as the mask!"
-        
+            if data2 is not None: assert data2.shape == self.mask.shape, "Data2 must have same shape as the mask!"
+            if data3 is not None: assert data3.shape == self.mask.shape, "Data3 must have same shape as the mask!"
+
         # Send to wrapper
-        return self._compute_bk_numerator(data, include_linear_term=False, filtering='ideal', verb=verb)
+        return self._compute_bk_numerator(data, data2=data2, data3=data3, include_linear_term=False, filtering='ideal', verb=verb)
 
     def compute_fisher_ideal(self, discreteness_correction=True, verb=False):
         """This computes the idealized Fisher matrix for the power spectrum, weighting by 1/P_fid(k) within each bin. 

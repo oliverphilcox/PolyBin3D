@@ -3,6 +3,7 @@
 
 import numpy as np
 import multiprocessing as mp
+from .base import LazyYlm
 import tqdm, time
 from scipy.special import legendre
 from scipy.interpolate import interp1d
@@ -111,10 +112,12 @@ class PSpec():
             self.radial_bins_RIC = radial_bins_RIC
             
         # Define spherical harmonics [for computing power spectrum multipoles]
+        # Uses lazy evaluation: Ylm components are computed on the fly instead of stored,
+        # saving ~99 GB for lmax=4 on large grids.
         if self.base.sightline=='local' and self.lmax>0:
-            print("Generating spherical harmonics")
-            self.Ylm_real = self.base.utils.compute_real_harmonics(np.asarray(self.base.r_grids), self.lmax, self.odd_l, self.base.nthreads)
-            self.Ylm_fourier = self.base.utils.compute_real_harmonics(np.asarray(self.base.k_grids), self.lmax, self.odd_l, self.base.nthreads)
+            print("Generating spherical harmonics (lazy)")
+            self.Ylm_real = LazyYlm(self.base.r_grids, self.lmax, self.odd_l, self.base.utils, self.base.nthreads)
+            self.Ylm_fourier = LazyYlm(self.base.k_grids, self.lmax, self.odd_l, self.base.utils, self.base.nthreads)
         else:
             self.Ylm_real = None
             self.Ylm_fourier = None
@@ -128,23 +131,30 @@ class PSpec():
         return np.asarray(ks)
         
     ### OPTIMAL ESTIMATOR
-    def Pk_numerator(self, data):
+    def Pk_numerator(self, data, data2=None):
         """
         Compute the numerator of the unwindowed power spectrum estimator, using the custom weighting function S^-1.
+        
+        If data2 is not None, we compute the cross-spectrum between the two datasets.
         """
         if not self.const_mask:
             assert data.shape == self.mask.shape, "Data must have same shape as the mask!"
+        if data2 is not None:
+            assert data2.shape == data.shape, "Data2 must have same shape as the data!"
 
         # Send to wrapper
-        return self._compute_pk_numerator(data, filtering='Sinv')
+        return self._compute_pk_numerator(data, data2=data2, filtering='Sinv')
     
-    def compute_fisher_contribution(self, seed, verb=False):
+    def compute_fisher_contribution(self, seed, maskA=None, maskB=None, verb=False):
         """This computes the contribution to the Fisher matrix from a single GRF simulation, created internally.
         
-        An optional input is a function that applies (S^-1)^dagger to a map. The code will assume (S^-1)^dagger = S^-1 if this is not supplied."""
+        An optional input is a function that applies (S^-1)^dagger to a map. The code will assume (S^-1)^dagger = S^-1 if this is not supplied.
+        
+        Note that we can optionally specify a pair of masks to use instead of the default (for computing cross-correlations).
+        """
         
         # Run main algorithm
-        return self._compute_fisher(seed, verb=verb, compute_cov=False)
+        return self._compute_fisher(seed, verb=verb, compute_cov=False, maskA=maskA, maskB=maskB)
     
     def compute_covariance_contribution(self, seed, Pk_cov, verb=False):
         """This computes the contribution to the Gaussian covariance matrix from a single GRF simulation, created internally.
@@ -196,23 +206,28 @@ class PSpec():
         # Run main code
         return self._compute_fisher(seed, verb=verb, compute_theory=True, k_bins_theory=k_bins_theory, lmax_theory=lmax_theory, include_wideangle=include_wideangle)
     
-    def apply_pointing(self, map_real, transpose=False):
+    def apply_pointing(self, map_real, mask=None, mask_IC=None, transpose=False):
         """Apply the pointing matrix to a map. This multiplies by the mask and optionally includes IC effects."""
+        if mask is None:
+            mask = self.mask
+        if mask_IC is None:
+            mask_IC = self.mask_IC
         if self.add_RIC:
             if transpose:
-                return self.base.utils.pointing_RIC_transpose(map_real, self.mask, self.mask_IC, self.radial_bins_RIC, self.base.modr_grid, self.base.nthreads)
+                return self.base.utils.pointing_RIC_transpose(map_real, mask, mask_IC, self.radial_bins_RIC, self.base.modr_grid, self.base.nthreads)
             else:
-                return self.base.utils.pointing_RIC(map_real, self.mask, self.mask_IC, self.radial_bins_RIC, self.base.modr_grid, self.base.nthreads)
+                return self.base.utils.pointing_RIC(map_real, mask, mask_IC, self.radial_bins_RIC, self.base.modr_grid, self.base.nthreads)
         elif self.add_GIC:
             if transpose:
-                return self.base.utils.pointing_GIC_transpose(map_real, self.mask, self.mask_IC, self.base.nthreads)
+                return self.base.utils.pointing_GIC_transpose(map_real, mask, mask_IC, self.base.nthreads)
             else:
-                return self.base.utils.pointing_GIC(map_real, self.mask, self.mask_IC, self.base.nthreads)
+                return self.base.utils.pointing_GIC(map_real, mask, mask_IC, self.base.nthreads)
         else:
-            out = self.base.map_utils.prod_real(map_real, self.mask)
+            out = self.base.map_utils.prod_real(map_real, mask)
             return out
 
-    def _compute_fisher(self, seed, verb=False, compute_cov=False, Pk_cov=[], compute_theory=False, k_bins_theory=[], lmax_theory=None, include_wideangle=False):
+    def _compute_fisher(self, seed, verb=False, compute_cov=False, Pk_cov=[], compute_theory=False, k_bins_theory=[], lmax_theory=None, include_wideangle=False,
+                        maskA=None, maskB=None, maskA_IC=None, maskB_IC=None):
         """Internal function to compute the contribution to the Fisher matrix, covariance, or theory matrix."""
 
         # Initialize output
@@ -230,6 +245,20 @@ class PSpec():
             Nk_th = len(k_bins_theory)-1
             N_bins_th = Nl_theory*Nk_th
             binning_matrix = np.zeros((self.N_bins,N_bins_th))
+            
+        # Optionally redefine the mask
+        if maskA is None:
+            maskA = self.mask
+            assert not self.const_mask
+        if maskB is None:
+            maskB = self.mask
+            assert not self.const_mask
+        if maskA_IC is None:
+            maskA_IC = self.mask_IC
+            assert not self.const_mask
+        if maskB_IC is None:
+            maskB_IC = self.mask_IC
+            assert not self.const_mask
         
         # Precompute power spectrum fields
         if compute_cov:
@@ -254,9 +283,9 @@ class PSpec():
             assert not compute_cov
             if (not hasattr(self,'Ylm_real_theory') and not hasattr(self,'Ylm_fourier_theory')):
                 if (lmax_theory>self.lmax) or (odd_l_theory!=self.odd_l):
-                    if verb: print("Generating spherical harmonics up to l = %d"%lmax_theory)
-                    self.Ylm_real_theory = self.base.utils.compute_real_harmonics(np.asarray(self.base.r_grids), lmax_theory, odd_l_theory, self.base.nthreads)
-                    self.Ylm_fourier_theory = self.base.utils.compute_real_harmonics(np.asarray(self.base.k_grids), lmax_theory, odd_l_theory, self.base.nthreads)
+                    if verb: print("Generating spherical harmonics up to l = %d (lazy)"%lmax_theory)
+                    self.Ylm_real_theory = LazyYlm(self.base.r_grids, lmax_theory, odd_l_theory, self.base.utils, self.base.nthreads)
+                    self.Ylm_fourier_theory = LazyYlm(self.base.k_grids, lmax_theory, odd_l_theory, self.base.utils, self.base.nthreads)
                 else:
                     self.Ylm_real_theory = self.Ylm_real
                     self.Ylm_fourier_theory = self.Ylm_fourier
@@ -267,13 +296,13 @@ class PSpec():
         if not self.const_mask:
             a_map_real = self.base.to_real(a_map_fourier)
         
-        def apply_filter(input_map):
+        def apply_filter(input_map, mask, mask_IC):
             """Apply S^-1 P or S^-1 C S^-dagger to a map. Note that the input is either in Fourier-space if const_mask=True else in real-space."""
             if not compute_cov:
                 if self.const_mask:
                     return self.mask_mean*self.applySinv(input_map, input_type='fourier', output_type='fourier')
                 else:
-                    return self.applySinv(self.apply_pointing(input_map, transpose=False), input_type='real', output_type='fourier')
+                    return self.applySinv(self.apply_pointing(input_map, mask=mask, mask_IC=mask_IC, transpose=False), input_type='real', output_type='fourier')
             else:
                 # Apply S^-1 [P Cov P^dagger + N] S^-dagger in order to compute covariances
                 if self.const_mask:
@@ -282,13 +311,13 @@ class PSpec():
                     return self.applySinv(CSid_map, input_type='fourier', output_type='fourier')
                 else:
                     Sid_map = self.applySinv_transpose(input_map, input_type='real', output_type='real')
-                    PdSid_map_real = self.apply_pointing(Sid_map, transpose=True)
+                    PdSid_map_real = self.apply_pointing(Sid_map, mask=mask, mask_IC=mask_IC, transpose=True)
                     PdSid_map = self.base.to_fourier(PdSid_map_real)
                     CPdSid_map = self.base.apply_xi(PdSid_map, PdSid_map_real, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='real')
-                    CovSid_map = self.apply_pointing(CPdSid_map, transpose=False) + self.base.map_utils.prod_real(Sid_map, self.mask_shot)
+                    CovSid_map = self.apply_pointing(CPdSid_map, mask=mask, mask_IC=mask_IC, transpose=False) + self.base.map_utils.prod_real(Sid_map, self.mask_shot)
                     return self.applySinv(CovSid_map, input_type='real', output_type='fourier')
                 
-        def apply_filter_dagger(input_map, real=False):
+        def apply_filter_dagger(input_map, mask, mask_IC, real=False):
             """Apply (S^-1 P)^dagger weighting to maps. Input is either a Fourier-space map or a real-space map."""
             if not compute_cov:
                 if self.const_mask:
@@ -299,9 +328,9 @@ class PSpec():
                 else:
                     if real:
                         # Use real-space map directly
-                        return self.base.to_fourier(self.apply_pointing(self.applySinv_transpose(input_map,input_type='real',output_type='real'), transpose=True))
+                        return self.base.to_fourier(self.apply_pointing(self.applySinv_transpose(input_map,input_type='real',output_type='real'), mask=mask, mask_IC=mask_IC, transpose=True))
                     else:
-                        return self.base.to_fourier(self.apply_pointing(self.applySinv_transpose(input_map,input_type='fourier',output_type='real'), transpose=True))
+                        return self.base.to_fourier(self.apply_pointing(self.applySinv_transpose(input_map,input_type='fourier',output_type='real'), mask=mask, mask_IC=mask_IC, transpose=True))
             else:
                 # Apply S^-1 P Cov P^dagger S^-dagger in order to compute covariances
                 if self.const_mask:
@@ -316,10 +345,10 @@ class PSpec():
                         Sid_map = self.applySinv_transpose(input_map, input_type='real', output_type='real')
                     else:
                         Sid_map = self.applySinv_transpose(input_map, input_type='fourier', output_type='real')
-                    PdSid_map_real = self.apply_pointing(Sid_map, transpose=True)
+                    PdSid_map_real = self.apply_pointing(Sid_map, mask=mask, mask_IC=mask_IC, transpose=True)
                     PdSid_map = self.base.to_fourier(PdSid_map_real)
                     CPdSid_map = self.base.apply_xi(PdSid_map, PdSid_map_real, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='real')
-                    CovSid_map = self.apply_pointing(CPdSid_map, transpose=False) + self.base.map_utils.prod_real(Sid_map, self.mask_shot)
+                    CovSid_map = self.apply_pointing(CPdSid_map, mask=mask, mask_IC=mask_IC, transpose=False) + self.base.map_utils.prod_real(Sid_map, self.mask_shot)
                     out = self.applySinv(CovSid_map, input_type='real', output_type='fourier')
                 return out
                 
@@ -327,9 +356,9 @@ class PSpec():
         if verb: print("Computing A^-1.a and S^-1.P.a")
         Ainv_map_fourier = self.base.applyAinv(a_map_fourier, input_type='fourier', output_type='fourier')
         if self.const_mask:
-            SinvP_map_fourier = apply_filter(a_map_fourier)
+            SinvP_map_fourier = apply_filter(a_map_fourier, maskA, maskA_IC)
         else:
-            SinvP_map_fourier = apply_filter(a_map_real)
+            SinvP_map_fourier = apply_filter(a_map_real, maskA, maskA_IC)
                
         # Define real-space maps (where necessary)
         if self.base.sightline=='local' and self.lmax>0:
@@ -443,7 +472,7 @@ class PSpec():
         if verb: print("Computing l = 0 output")
         for ki in range(self.Nk):
             kmap = self.base.map_utils.fourier_filter(SinvP_map_fourier, 0, self.k_bins[ki], self.k_bins[ki+1])
-            add_to_matrix(ki, apply_filter_dagger(kmap, real=False))
+            add_to_matrix(ki, apply_filter_dagger(kmap, maskB, maskB_IC, real=False))
 
         # Repeat for higher-order multipoles
         for li in range(1,self.Nl):
@@ -453,7 +482,7 @@ class PSpec():
             
                 # Multiply by L_ell(mu) and add to bins
                 for ki in range(self.Nk):
-                    add_to_matrix(li*self.Nk+ki, apply_filter_dagger(self.base.map_utils.fourier_filter(SinvP_map_fourier, li*2, self.k_bins[ki], self.k_bins[ki+1]), real=False))
+                    add_to_matrix(li*self.Nk+ki, apply_filter_dagger(self.base.map_utils.fourier_filter(SinvP_map_fourier, li*2, self.k_bins[ki], self.k_bins[ki+1]), maskB, maskB_IC, real=False))
 
             else:
                 if verb: print("Computing l = %d output"%((2-self.odd_l)*li))
@@ -468,7 +497,7 @@ class PSpec():
                     kmap = self.base.map_utils.fourier_filter(leg_map, 0, self.k_bins[ki], self.k_bins[ki+1])
                     if (li%2==1 and self.odd_l):
                         kmap *= -1.0j
-                    Q_map = 0.5*apply_filter_dagger(kmap, real=False)
+                    Q_map = 0.5*apply_filter_dagger(kmap, maskB, maskB_IC, real=False)
 
                     # Second part: Sum_m Y_lm (x) Int_k e^ik.x Theta_b(k) Y_lm(k)*[P a](k)                        
                     real_map = self.base.real_zeros()
@@ -482,11 +511,420 @@ class PSpec():
                         real_map += self.base.map_utils.prod_real(self.base.to_real(k_map), self.Ylm_real[(2-self.odd_l)*li][lm_ind])
                     
                     # Add second part, using the real-space map [which fills all Fourier modes, not just those in [k_min, k_max]]
-                    Q_map += 0.5*apply_filter_dagger(real_map, real=True)
+                    Q_map += 0.5*apply_filter_dagger(real_map, maskB, maskB_IC, real=True)
 
                     # Add to output
                     add_to_matrix(li*self.Nk+ki, Q_map)
                     
+        if compute_theory:
+            return fisher_matrix, binning_matrix
+        else:
+            return fisher_matrix
+
+    def _compute_fisher_fnl(self, seed, verb=False, compute_cov=False, Pk_cov=[], compute_theory=False, k_bins_theory=[], lmax_theory=None, include_wideangle=False,
+                        maskA=None, maskB=None, maskA_IC=None, maskB_IC=None):
+        """Internal function to compute the contribution to the Fisher matrix, covariance, or theory matrix."""
+
+        # Initialize output
+        fisher_matrix = np.zeros((self.N_bins,self.N_bins))
+        if compute_theory:
+            # Define lmax and check wide-angle effects
+            if include_wideangle:
+                odd_l_theory = True
+            else:
+                odd_l_theory = self.odd_l
+            if odd_l_theory and not include_wideangle:
+                Nl_theory = lmax_theory+1
+            else:
+                Nl_theory = lmax_theory//2+1
+            Nk_th = len(k_bins_theory)-1
+            N_bins_th = Nl_theory*Nk_th
+            binning_matrix = np.zeros((self.N_bins,N_bins_th))
+            
+        # Optionally redefine the mask
+        if maskA is None:
+            maskA = self.mask
+            assert not self.const_mask
+        if maskB is None:
+            maskB = self.mask
+            assert not self.const_mask
+        if maskA_IC is None:
+            maskA_IC = self.mask_IC
+            assert not self.const_mask
+        if maskB_IC is None:
+            maskB_IC = self.mask_IC
+            assert not self.const_mask
+        
+        # Precompute power spectrum fields
+        if compute_cov:
+            assert not compute_theory
+            assert not include_wideangle
+            Pk_grid = {}
+            if self.base.sightline=='global':
+                Pk_grid[0] = interp1d(Pk_cov[0], Pk_cov[1], bounds_error=False, fill_value=0.)(self.base.modk_grid)
+                if len(Pk_cov)>2:
+                    Pk_grid[0] += legendre(2)(self.base.muk_grid)*interp1d(Pk_cov[0], Pk_cov[2], bounds_error=False, fill_value=0.)(self.base.modk_grid)
+                if len(Pk_cov)>3:
+                    Pk_grid[0] += legendre(4)(self.base.muk_grid)*interp1d(Pk_cov[0], Pk_cov[3], bounds_error=False, fill_value=0.)(self.base.modk_grid)   
+            elif self.base.sightline=='local':
+                Pk_grid[0] = interp1d(Pk_cov[0], Pk_cov[1], bounds_error=False, fill_value=0.)(self.base.modk_grid)
+                if len(Pk_cov)>2:
+                    Pk_grid[2] = interp1d(Pk_cov[0], Pk_cov[2], bounds_error=False, fill_value=0.)(self.base.modk_grid)
+                if len(Pk_cov)>3:
+                    Pk_grid[4] = interp1d(Pk_cov[0], Pk_cov[3], bounds_error=False, fill_value=0.)(self.base.modk_grid)    
+        
+        # Compute new spherical harmonics if necessary
+        if compute_theory and self.base.sightline=='local':
+            assert not compute_cov
+            if (not hasattr(self,'Ylm_real_theory') and not hasattr(self,'Ylm_fourier_theory')):
+                if (lmax_theory>self.lmax) or (odd_l_theory!=self.odd_l):
+                    if verb: print("Generating spherical harmonics up to l = %d (lazy)"%lmax_theory)
+                    self.Ylm_real_theory = LazyYlm(self.base.r_grids, lmax_theory, odd_l_theory, self.base.utils, self.base.nthreads)
+                    self.Ylm_fourier_theory = LazyYlm(self.base.k_grids, lmax_theory, odd_l_theory, self.base.utils, self.base.nthreads)
+                else:
+                    self.Ylm_real_theory = self.Ylm_real
+                    self.Ylm_fourier_theory = self.Ylm_fourier
+
+        # Compute a random realization with known power spectrum
+        if verb: print("Generating GRF")
+        a_map_fourier = self.base.generate_data(seed=seed+int(1e7), output_type='fourier')
+        if not self.const_mask:
+            a_map_real = self.base.to_real(a_map_fourier)
+        
+        def apply_filter(input_map, mask, mask_IC, filter_type='', filter_type2=''):
+            """Apply S^-1 P or S^-1 C S^-dagger to a map. Note that the input is either in Fourier-space if const_mask=True else in real-space."""
+            if not compute_cov:
+                assert filter_type2==''
+                if self.const_mask:
+                    return self.mask_mean*self.applySinv(input_map, input_type='fourier', output_type='fourier', filter_type=filter_type)
+                else:
+                    return self.applySinv(self.apply_pointing(input_map, mask=mask, mask_IC=mask_IC, transpose=False), input_type='real', output_type='fourier', filter_type=filter_type)
+            else:
+                # Apply S^-1 [P Cov P^dagger + N] S^-dagger in order to compute covariances
+                if self.const_mask:
+                    Sid_map = self.applySinv_transpose(input_map, input_type='fourier', output_type='fourier', filter_type=filter_type)
+                    CSid_map = self.mask_mean**2*self.base.apply_xi(Sid_map, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='fourier') + self.mask_mean*Sid_map
+                    return self.applySinv(CSid_map, input_type='fourier', output_type='fourier', filter_type=filter_type2)
+                else:
+                    Sid_map = self.applySinv_transpose(input_map, input_type='real', output_type='real', filter_type=filter_type)
+                    PdSid_map_real = self.apply_pointing(Sid_map, mask=mask, mask_IC=mask_IC, transpose=True)
+                    PdSid_map = self.base.to_fourier(PdSid_map_real)
+                    CPdSid_map = self.base.apply_xi(PdSid_map, PdSid_map_real, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='real')
+                    CovSid_map = self.apply_pointing(CPdSid_map, mask=mask, mask_IC=mask_IC, transpose=False) + self.base.map_utils.prod_real(Sid_map, self.mask_shot)
+                    return self.applySinv(CovSid_map, input_type='real', output_type='fourier', filter_type=filter_type2)
+                
+        def apply_filter_dagger(input_map, mask, mask_IC, real=False, filter_type='', filter_type2=''):
+            """Apply (S^-1 P)^dagger weighting to maps. Input is either a Fourier-space map or a real-space map."""
+            if not compute_cov:
+                if self.const_mask:
+                    if real:
+                        return self.mask_mean*self.applySinv_transpose(input_map,input_type='real',output_type='fourier', filter_type=filter_type)
+                    else:
+                        return self.mask_mean*self.applySinv_transpose(input_map,input_type='fourier',output_type='fourier', filter_type=filter_type)         
+                else:
+                    if real:
+                        # Use real-space map directly
+                        return self.base.to_fourier(self.apply_pointing(self.applySinv_transpose(input_map,input_type='real',output_type='real', filter_type=filter_type), mask=mask, mask_IC=mask_IC, transpose=True))
+                    else:
+                        return self.base.to_fourier(self.apply_pointing(self.applySinv_transpose(input_map,input_type='fourier',output_type='real', filter_type=filter_type), mask=mask, mask_IC=mask_IC, transpose=True))
+            else:
+                # Apply S^-1 P Cov P^dagger S^-dagger in order to compute covariances
+                if self.const_mask:
+                    if real:
+                        Sid_map = self.applySinv_transpose(input_map, input_type='real', output_type='fourier', filter_type=filter_type)
+                    else:
+                        Sid_map = self.applySinv_transpose(input_map, input_type='fourier', output_type='fourier', filter_type=filter_type)
+                    CSid_map = self.mask_mean**2*self.base.apply_xi(Sid_map, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='fourier') + self.mask_mean*Sid_map
+                    return self.applySinv(CSid_map, input_type='fourier', output_type='fourier', filter_type=filter_type2)
+                else:
+                    if real:
+                        Sid_map = self.applySinv_transpose(input_map, input_type='real', output_type='real', filter_type=filter_type)
+                    else:
+                        Sid_map = self.applySinv_transpose(input_map, input_type='fourier', output_type='real', filter_type=filter_type)
+                    PdSid_map_real = self.apply_pointing(Sid_map, mask=mask, mask_IC=mask_IC, transpose=True)
+                    PdSid_map = self.base.to_fourier(PdSid_map_real)
+                    CPdSid_map = self.base.apply_xi(PdSid_map, PdSid_map_real, Ylm_real=self.Ylm_real, Ylm_fourier=self.Ylm_fourier, Pk_grid=Pk_grid, output_type='real')
+                    CovSid_map = self.apply_pointing(CPdSid_map, mask=mask, mask_IC=mask_IC, transpose=False) + self.base.map_utils.prod_real(Sid_map, self.mask_shot)
+                    return self.applySinv(CovSid_map, input_type='real', output_type='fourier', filter_type=filter_type2)
+                
+        # Filter map by A^-1 and S^-1 P
+        if verb: print("Computing A^-1.a and S^-1.P.a")
+        Ainv_map_fourier = self.base.applyAinv(a_map_fourier, input_type='fourier', output_type='fourier')
+        if not compute_cov:
+            if self.const_mask:
+                SinvP_map_fourier_w0 = apply_filter(a_map_fourier, maskA, maskA_IC, filter_type='w0')
+            else:
+                SinvP_map_fourier_w0 = apply_filter(a_map_real, maskA, maskA_IC, filter_type='w0')
+        else:
+            if self.const_mask:
+                SinvP_map_fourier_w0_wtilde = apply_filter(a_map_fourier, maskA, maskA_IC, filter_type='wtilde', filter_type2='w0')
+                SinvP_map_fourier_wtilde_wtilde = apply_filter(a_map_fourier, maskA, maskA_IC, filter_type='wtilde', filter_type2='wtilde')
+            else:
+                SinvP_map_fourier_w0_wtilde = apply_filter(a_map_real, maskA, maskA_IC, filter_type='wtilde', filter_type2='w0')
+                SinvP_map_fourier_wtilde_wtilde = apply_filter(a_map_real, maskA, maskA_IC, filter_type='wtilde', filter_type2='wtilde')
+                
+        if self.lmax>0:
+            assert self.lmax==2, "Higher multipoles not yet implemented!"
+            if not compute_cov:
+                if self.const_mask:
+                    SinvP_map_fourier_w2 = apply_filter(a_map_fourier, maskA, maskA_IC, filter_type='w2')
+                else:
+                    SinvP_map_fourier_w2 = apply_filter(a_map_real, maskA, maskA_IC, filter_type='w2')
+            else:
+                if self.const_mask:
+                    SinvP_map_fourier_w2_wtilde = apply_filter(a_map_fourier, maskA, maskA_IC, filter_type='wtilde', filter_type2='w2')
+                    SinvP_map_fourier_wtilde_wtilde = apply_filter(a_map_fourier, maskA, maskA_IC, filter_type='wtilde', filter_type2='wtilde')
+                else:
+                    SinvP_map_fourier_w2_wtilde = apply_filter(a_map_real, maskA, maskA_IC, filter_type='wtilde', filter_type2='w2')
+                    SinvP_map_fourier_wtilde_wtilde = apply_filter(a_map_real, maskA, maskA_IC, filter_type='wtilde', filter_type2='wtilde')
+        
+        # Define real-space maps (where necessary)
+        if not compute_cov:
+            if self.base.sightline=='local' and self.lmax>0:
+                SinvP_map_real_w2 = self.base.to_real(SinvP_map_fourier_w2)
+        else:
+            if self.base.sightline=='local' and self.lmax>0:
+                SinvP_map_real_w2_wtilde = self.base.to_real(SinvP_map_fourier_w2_wtilde)
+                SinvP_map_real_wtilde_wtilde = self.base.to_real(SinvP_map_fourier_wtilde_wtilde)
+        if compute_theory:
+            if self.base.sightline=='local' and lmax_theory>0:
+                Ainv_map_real = self.base.to_real(Ainv_map_fourier)
+                if include_wideangle:
+                    inv_r_Ainv_map_real = self.base.map_utils.div_real(Ainv_map_real, self.base.modr_grid)
+        elif (self.base.sightline=='local' and self.lmax>0):
+            Ainv_map_real = self.base.to_real(Ainv_map_fourier)
+            
+        # Precompute all Legendre multipoles
+        if verb: print("Computing Legendre multipoles for A^-1.a")
+        leg_maps = {}
+        if not compute_theory:
+            if self.base.sightline=='local':
+                for li in range(1,self.Nl):
+                    # Compute e^{-ik.x}L_l(k.x)a(x)
+                    leg_maps[li*(2-self.odd_l)] = self.base.apply_fourier_harmonics(Ainv_map_real, self.Ylm_real[(2-self.odd_l)*li], self.Ylm_fourier[(2-self.odd_l)*li])
+        else:
+            if self.base.sightline=='local' and not include_wideangle:
+                for li in range(1,Nl_theory):
+                    # Compute e^{-ik.x}L_l(k.x)a(x)
+                    leg_maps[li*(2-odd_l_theory)] = self.base.apply_fourier_harmonics(Ainv_map_real, self.Ylm_real_theory[(2-odd_l_theory)*li], self.Ylm_fourier_theory[(2-odd_l_theory)*li])
+            
+            elif self.base.sightline=='local' and include_wideangle:
+                for l in range(1,lmax_theory+1):
+                    if l%2==0:
+                        # Compute e^{-ik.x}L_l(k.x)a(x)
+                        leg_maps[l] = self.base.apply_fourier_harmonics(Ainv_map_real, self.Ylm_real_theory[l], self.Ylm_fourier_theory[l])
+                    else:
+                        # Compute e^{-ik.x}L_l(k.x)a(x)/kx
+                        leg_maps[l] = self.base.apply_fourier_harmonics(inv_r_Ainv_map_real, self.Ylm_real_theory[l], self.Ylm_fourier_theory[l])
+                    
+        def derivative_coefficient(ki):
+            """Compute coefficients for numerical derivative of k * dP(k)/dk"""
+            kfac = np.zeros(Nk_th)
+            for ki in range(Nk_th):
+                if ki-1>0 and ki-1<Nk_th-1: 
+                    kfac[ki] += k_bins_theory[ki-1]/(k_bins_theory[ki]-k_bins_theory[ki-2])
+                if ki+1>0 and ki+1<Nk_th-1:
+                    kfac[ki] -= k_bins_theory[ki+1]/(k_bins_theory[ki+2]-k_bins_theory[ki])
+                kfac[ki] += k_bins_theory[0]/(k_bins_theory[1]-k_bins_theory[0])*((ki==1)-(ki==0))
+                kfac[ki] -= k_bins_theory[-1]/(k_bins_theory[-1]-k_bins_theory[-2])*((ki==Nk_th-1)-(ki==Nk_th-2))
+            return kfac            
+
+        def add_to_matrix(row, Q, l_single=None):
+            """Compute a single row of the Fisher matrix (and optionally the binning matrix), given a Q map."""
+                  
+            def bin_integrate_all(input_map1, input_map2, k_bins=self.k_bins, li=0, coeff=None):
+                """Integrate two maps over all k-bins"""
+                if coeff is None:
+                    integ = self.base.integrator.cross_integrate(input_map1, input_map2, k_bins, li*2)
+                elif coeff is not None:
+                    assert li==0
+                    integ = self.base.integrator.cross_integrate_wcoeff(coeff, input_map1, input_map2, k_bins)
+                scaling = 0.5*self.base.volume/self.base.gridsize.prod()**2
+                return integ*scaling
+                  
+            # Assemble binning matrix for the monopole
+            if l_single is not None:
+                if l_single == 0:
+                    fisher_matrix[row, :self.Nk] += bin_integrate_all(Ainv_map_fourier,Q)
+            else:
+                fisher_matrix[row, :self.Nk] += bin_integrate_all(Ainv_map_fourier,Q)
+            if compute_theory:
+                assert l_single is None
+                binning_matrix[row, :Nk_th] += bin_integrate_all(Ainv_map_fourier,Q,k_bins_theory)
+                
+            # Assemble matrix for higher-order multipoles
+            if self.base.sightline=='global':
+                for li in range(1,self.Nl):
+                    if l_single is not None:
+                        # Only fill column of interest
+                        if l_single is not 2*li: continue
+                    fisher_matrix[row, li*self.Nk:(li+1)*self.Nk] += bin_integrate_all(Ainv_map_fourier, Q, li=li)
+                if compute_theory: 
+                    for li in range(1,Nl_theory):
+                        binning_matrix[row, li*Nk_th:(li+1)*Nk_th] += bin_integrate_all(Ainv_map_fourier, Q, li=li, k_bins=k_bins_theory)
+
+            elif self.base.sightline=='local':
+                # Assemble Fisher matrix
+                for li in range(1,self.Nl):
+                    if l_single is not None:
+                        # Only fill column of interest
+                        if l_single is not 2*li: continue
+                    
+                    # Note that we add a phase for odd ell
+                    if (self.odd_l and li%2==1):
+                        fisher_matrix[row, li*self.Nk:(li+1)*self.Nk] += bin_integrate_all(leg_maps[li*(2-self.odd_l)], 1.0j*Q)
+                    else:
+                        fisher_matrix[row, li*self.Nk:(li+1)*self.Nk] += bin_integrate_all(leg_maps[li*(2-self.odd_l)], Q)
+
+                if compute_theory:
+                    assert l_single is None
+                    # Assemble binning matrix
+                    if not include_wideangle:
+                        for li in range(1,Nl_theory):
+                            # Note that we add a phase for odd ell
+                            if (odd_l_theory and li%2==1):
+                                binning_matrix[row, li*Nk_th:(li+1)*Nk_th] += bin_integrate_all(leg_maps[li*(2-odd_l_theory)], 1.0j*Q, k_bins=k_bins_theory)
+                            else:
+                                binning_matrix[row, li*Nk_th:(li+1)*Nk_th] += bin_integrate_all(leg_maps[li*(2-odd_l_theory)], Q, k_bins=k_bins_theory)                
+                    else:
+                        for l in range(1,lmax_theory+1):
+                            # Compute even ell piece and add to output
+                            if l%2==0:
+                                binning_matrix[row, l//2*Nk_th:(l//2+1)*Nk_th] += bin_integrate_all(leg_maps[l], Q, k_bins=k_bins_theory)
+
+                            # Compute wide-angle corrections from odd ell
+                            else:
+                                kfac = derivative_coefficient(ki)
+                                # Add to ell=2
+                            if l==1 and lmax_theory>=2:
+                                binning_matrix[row, Nk_th:2*Nk_th] += bin_integrate_all(leg_maps[l], Q, coeff=3.0j/5.*(3+kfac), k_bins=k_bins_theory)
+                            # Add to ell=2,4
+                            if l==3 and lmax_theory>=2:
+                                binning_matrix[row, Nk_th:2*Nk_th] += bin_integrate_all(leg_maps[l], Q, coeff=3.0j/5.*(2-kfac), k_bins=k_bins_theory)                                
+                            if l==3 and lmax_theory>=4:
+                                binning_matrix[row, 2*Nk_th:3*Nk_th] += bin_integrate_all(leg_maps[l], Q, coeff=10.0j/9.*(5+kfac), k_bins=k_bins_theory)                                
+            
+        # Compute Q derivative for the monopole and add to output
+        if verb: print("Computing l = 0 output")
+        if not compute_cov:
+            for ki in range(self.Nk):
+                kmap = self.base.map_utils.fourier_filter(SinvP_map_fourier_w0, 0, self.k_bins[ki], self.k_bins[ki+1])
+                add_to_matrix(ki, apply_filter_dagger(kmap, maskB, maskB_IC, real=False, filter_type='wtilde'))
+        else:
+            for ki in range(self.Nk):
+                # Compute xi_{0,ki} FullCov_{w0 tilde} a and xi_{0,ki} FullCov_{wtilde tilde} a
+                kmap_w0_wtilde = self.base.map_utils.fourier_filter(SinvP_map_fourier_w0_wtilde, 0, self.k_bins[ki], self.k_bins[ki+1])
+                kmap_wtilde_wtilde = self.base.map_utils.fourier_filter(SinvP_map_fourier_wtilde_wtilde, 0, self.k_bins[ki], self.k_bins[ki+1])
+                # Compute C^-1_{wl_b wtilde} piece and add to matrix (treating wl separately)
+                add_to_matrix(ki, apply_filter_dagger(kmap_w0_wtilde, maskB, maskB_IC, real=False, filter_type='wtilde', filter_type2='w0'),l_single=0)
+                add_to_matrix(ki, apply_filter_dagger(kmap_w0_wtilde, maskB, maskB_IC, real=False, filter_type='wtilde', filter_type2='w2'),l_single=2)
+                # Compute C^-1_{wl_b w0} piece and add to matrix
+                add_to_matrix(ki, apply_filter_dagger(kmap_wtilde_wtilde, maskB, maskB_IC, real=False, filter_type='w0', filter_type2='w0'), l_single=0)
+                add_to_matrix(ki, apply_filter_dagger(kmap_wtilde_wtilde, maskB, maskB_IC, real=False, filter_type='w0', filter_type2='w2'), l_single=2)
+        
+        # Repeat for higher-order multipoles
+        for li in range(1,self.Nl):
+            
+            if self.base.sightline=='global':
+                if verb: print("Computing l = %d output"%(2*li))
+            
+                # Multiply by L_ell(mu) and add to bins
+                for ki in range(self.Nk):
+                    assert li==1, "Higher multipoles not yet implemented!"
+                    if not compute_cov:
+                        add_to_matrix(li*self.Nk+ki, apply_filter_dagger(self.base.map_utils.fourier_filter(SinvP_map_fourier_w2, li*2, self.k_bins[ki], self.k_bins[ki+1]), maskB, maskB_IC, real=False, filter_type='wtilde'))
+                    else:
+                        # Compute xi_{2,ki} FullCov_{w2 tilde} a and xi_{2,ki} FullCov_{wtilde tilde} a
+                        kmap_w2_wtilde = self.base.map_utils.fourier_filter(SinvP_map_fourier_w2_wtilde, li*2, self.k_bins[ki], self.k_bins[ki+1])
+                        kmap_wtilde_wtilde = self.base.map_utils.fourier_filter(SinvP_map_fourier_wtilde_wtilde, li*2, self.k_bins[ki], self.k_bins[ki+1])
+                        # Compute C^-1_{wl_b wtilde} piece and add to matrix (treating wl separately)
+                        add_to_matrix(li*self.Nk+ki, apply_filter_dagger(kmap_w2_wtilde, maskB, maskB_IC, real=False, filter_type='wtilde', filter_type2='w0'),l_single=0)
+                        add_to_matrix(li*self.Nk+ki, apply_filter_dagger(kmap_w0_wtilde, maskB, maskB_IC, real=False, filter_type='wtilde', filter_type2='w2'),l_single=2)
+                        # Compute C^-1_{wl_b w2} piece and add to matrix
+                        add_to_matrix(li*self.Nk+ki, apply_filter_dagger(kmap_wtilde_wtilde, maskB, maskB_IC, real=False, filter_type='w2', filter_type2='w0'), l_single=0)
+                        add_to_matrix(li*self.Nk+ki, apply_filter_dagger(kmap_wtilde_wtilde, maskB, maskB_IC, real=False, filter_type='w2', filter_type2='w2'), l_single=2)
+
+            else:
+                if verb: print("Computing l = %d output"%((2-self.odd_l)*li))
+
+                # First part: (-1)^l Theta_b(k) Sum_m Y_lm(k)* [S^-1.P.a]_lm(k)
+                assert li==1, "Higher multipoles not yet implemented!"
+                if not compute_cov:
+                    leg_map = self.base.apply_fourier_harmonics(SinvP_map_real_w2, self.Ylm_real[(2-self.odd_l)*li], self.Ylm_fourier[(2-self.odd_l)*li])
+                else:
+                    leg_map_w2_wtilde = self.base.apply_fourier_harmonics(SinvP_map_real_w2_wtilde, self.Ylm_real[(2-self.odd_l)*li], self.Ylm_fourier[(2-self.odd_l)*li])
+                    leg_map_wtilde_wtilde = self.base.apply_fourier_harmonics(SinvP_map_real_wtilde_wtilde, self.Ylm_real[(2-self.odd_l)*li], self.Ylm_fourier[(2-self.odd_l)*li])
+                                
+                # Add to bins
+                for ki in range(self.Nk):
+
+                    if not compute_cov:
+                        # Add first part
+                        kmap = self.base.map_utils.fourier_filter(leg_map, 0, self.k_bins[ki], self.k_bins[ki+1])
+                        if (li%2==1 and self.odd_l):
+                            kmap *= -1.0j
+                        Q_map = 0.5*apply_filter_dagger(kmap, maskB, maskB_IC, real=False, filter_type='wtilde')
+    
+                        # Second part: Sum_m Y_lm (x) Int_k e^ik.x Theta_b(k) Y_lm(k)*[P a](k)
+                        real_map = self.base.real_zeros()
+                        for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li])):
+                            # Apply Theta_b function
+                            k_map = self.base.map_utils.prod_fourier_filter(SinvP_map_fourier_w2, self.Ylm_fourier[(2-self.odd_l)*li][lm_ind], self.k_bins[ki], self.k_bins[ki+1])
+                            
+                            # Add to sum, being careful of real and imaginary parts
+                            if (li%2==1 and self.odd_l):
+                                k_map *= -1.0j
+                            real_map += self.base.map_utils.prod_real(self.base.to_real(k_map), self.Ylm_real[(2-self.odd_l)*li][lm_ind])
+                        
+                        # Add second part, using the real-space map [which fills all Fourier modes, not just those in [k_min, k_max]]
+                        Q_map += 0.5*apply_filter_dagger(real_map, maskB, maskB_IC, real=True, filter_type='wtilde')
+    
+                        # Add to output
+                        add_to_matrix(li*self.Nk+ki, Q_map)
+
+                    else:
+                        # Add first part
+                        kmap_w2_wtilde = self.base.map_utils.fourier_filter(leg_map_w2_wtilde, 0, self.k_bins[ki], self.k_bins[ki+1])
+                        kmap_wtilde_wtilde = self.base.map_utils.fourier_filter(leg_map_wtilde_wtilde, 0, self.k_bins[ki], self.k_bins[ki+1])
+
+                        if (li%2==1 and self.odd_l):
+                            raise Exception("Not implemented!")
+                            # kmap *= -1.0j
+                        Q_map0 = 0.5*apply_filter_dagger(kmap_w2_wtilde, maskB, maskB_IC, real=False, filter_type='wtilde', filter_type2='w0')
+                        Q_map2 = 0.5*apply_filter_dagger(kmap_w2_wtilde, maskB, maskB_IC, real=False, filter_type='wtilde', filter_type2='w2')
+                        Q_map0 += 0.5*apply_filter_dagger(kmap_wtilde_wtilde, maskB, maskB_IC, real=False, filter_type='w2', filter_type2='w0')
+                        Q_map2 += 0.5*apply_filter_dagger(kmap_wtilde_wtilde, maskB, maskB_IC, real=False, filter_type='w2', filter_type2='w2')
+
+
+                        # Second part: Sum_m Y_lm (x) Int_k e^ik.x Theta_b(k) Y_lm(k)*[P a](k)
+                        real_map_w2_wtilde = self.base.real_zeros()
+                        real_map_wtilde_wtilde = self.base.real_zeros()
+                        for lm_ind in range(len(self.Ylm_real[(2-self.odd_l)*li])):
+                            # Apply Theta_b function
+                            k_map_w2_wtilde = self.base.map_utils.prod_fourier_filter(SinvP_map_fourier_w2_wtilde, self.Ylm_fourier[(2-self.odd_l)*li][lm_ind], self.k_bins[ki], self.k_bins[ki+1])
+                            k_map_wtilde_wtilde = self.base.map_utils.prod_fourier_filter(SinvP_map_fourier_wtilde_wtilde, self.Ylm_fourier[(2-self.odd_l)*li][lm_ind], self.k_bins[ki], self.k_bins[ki+1])
+                            
+                            # Add to sum, being careful of real and imaginary parts
+                            if (li%2==1 and self.odd_l):
+                                raise Exception("Not implemented!")
+                                #k_map *= -1.0j
+                            real_map_w2_wtilde += self.base.map_utils.prod_real(self.base.to_real(k_map_w2_wtilde), self.Ylm_real[(2-self.odd_l)*li][lm_ind])
+                            real_map_wtilde_wtilde += self.base.map_utils.prod_real(self.base.to_real(k_map_wtilde_wtilde), self.Ylm_real[(2-self.odd_l)*li][lm_ind])
+                        
+                        # Add second part, using the real-space map [which fills all Fourier modes, not just those in [k_min, k_max]]
+                        Q_map0 += 0.5*apply_filter_dagger(real_map_w2_wtilde, maskB, maskB_IC, real=True, filter_type='wtilde', filter_type2='w0')
+                        Q_map2 += 0.5*apply_filter_dagger(real_map_w2_wtilde, maskB, maskB_IC, real=True, filter_type='wtilde', filter_type2='w2')
+                        Q_map0 += 0.5*apply_filter_dagger(real_map_wtilde_wtilde, maskB, maskB_IC, real=True, filter_type='w2', filter_type2='w0')
+                        Q_map2 += 0.5*apply_filter_dagger(real_map_wtilde_wtilde, maskB, maskB_IC, real=True, filter_type='w2', filter_type2='w2')
+
+                        # Add to output (separately for each l)
+                        add_to_matrix(li*self.Nk+ki, Q_map0, l_single=0)
+                        add_to_matrix(li*self.Nk+ki, Q_map2, l_single=2)
+
+        if compute_cov:
+            # Correct for double counting!
+            fisher_matrix /= 2.
+        
         if compute_theory:
             return fisher_matrix, binning_matrix
         else:
@@ -544,6 +982,66 @@ class PSpec():
                 
                 # Apply binning
                 shot[li*self.Nk:(li+1)*self.Nk] = 0.5*self.base.integrator.cross_integrate(lm_sum, Sinv_N_Ainv_a, self.k_bins, 0)
+                
+        # Add FFT normalization
+        shot *= self.base.volume/self.base.gridsize.prod()**2
+        
+        return shot
+
+    def compute_shot_contribution_fnl(self, seed):
+        """This computes the contribution to the shot-noise from a single GRF simulation, created internally. We adopt the optimal z-dependent fNL weighting scheme."""
+        assert self.lmax in [0,2], "Higher multipoles not yet available!"
+        assert not self.odd_l, "Odd multipoles not yet available!"
+        
+        if not self.const_mask:
+            assert hasattr(self, 'mask_shot'), "Must supply mask_shot to compute shot-noise contribution"
+
+        # Initialize output
+        shot = np.zeros(self.N_bins)
+        
+        # Define an inverse power spectrum to draw GRFs from
+        PkA = [self.base.Pfid[0],1./self.base.Pfid[1]]
+        PkA_grid = interp1d(PkA[0], PkA[1], bounds_error=False, fill_value=(PkA[1][0],PkA[1][-1]))(self.base.modk_grid)
+        invPkA_grid = np.zeros_like(PkA_grid)
+        invPkA_grid[self.base.modk_grid!=0] = 1./PkA_grid[self.base.modk_grid!=0]
+
+        # Compute a random realization with known power spectrum
+        a_map_fourier = self.base.generate_data(seed=seed+int(1e7), Pk_input=PkA, output_type='fourier')
+        
+        # Compute S^-1 N A^-1 a in Fourier-space
+        if self.const_mask:
+            Ainv_a_fourier = self.base.applyAinv(a_map_fourier, invPk0_grid=invPkA_grid, input_type='fourier', output_type='fourier')
+            Sinv_N_Ainv_a_wtilde = self.mask_mean*self.applySinv(Ainv_a_fourier, input_type='fourier', output_type='fourier', filter_type='wtilde')
+        else:
+            Ainv_a = self.base.applyAinv(a_map_fourier, invPk0_grid=invPkA_grid, input_type='fourier', output_type='real')
+            Sinv_N_Ainv_a_wtilde = self.applySinv(self.base.map_utils.prod_real(Ainv_a, self.mask_shot), input_type='real', output_type='fourier', filter_type='wtilde')
+        
+        # Compute S^-1 a
+        Sinv_a_w0 = self.applySinv(a_map_fourier, input_type='fourier', output_type='fourier', filter_type='w0')
+        if self.lmax>0:
+            Sinv_a_w2 = self.applySinv(a_map_fourier, input_type='fourier', output_type='fourier', filter_type='w2')
+        if self.lmax>0 and self.base.sightline=='local':
+            Sinv_a_real_w2 = self.base.to_real(Sinv_a_w2)
+        
+        # Assemble monopole
+        shot[:self.Nk] = 0.5*self.base.integrator.cross_integrate(Sinv_N_Ainv_a_wtilde, Sinv_a_w0, self.k_bins, 0)
+        
+        # Repeat for higher-order multipoles
+        for li in range(1,self.Nl):
+            if self.base.sightline=='global':
+                
+                # Compute legendre-weighted integral
+                assert li==1
+                shot[li*self.Nk:(li+1)*self.Nk] = 0.5*self.base.integrator.cross_integrate(Sinv_N_Ainv_a_wtilde, Sinv_a_w2, self.k_bins, 2*li)
+            
+            else:
+                
+                # Compute Sum_m Y_lm(k)[S^-1 a]^*_lm(k)
+                assert li==1
+                lm_sum = self.base.apply_fourier_harmonics(Sinv_a_real_w2, self.Ylm_real[(2-self.odd_l)*li], self.Ylm_fourier[(2-self.odd_l)*li])
+                
+                # Apply binning
+                shot[li*self.Nk:(li+1)*self.Nk] = 0.5*self.base.integrator.cross_integrate(Sinv_N_Ainv_a_wtilde, lm_sum, self.k_bins, 0)
                 
         # Add FFT normalization
         shot *= self.base.volume/self.base.gridsize.prod()**2
@@ -609,39 +1107,64 @@ class PSpec():
             index += self.Nk
 
         return Pk_dict
-       
-    def _compute_pk_numerator(self, data, filtering='ideal'):
-        """Internal function to compute the power spectrum numerator. This is used by the Pk_numerator and Pk_numerator_ideal functions."""
+
+    def _compute_pk_numerator(self, data, data2=None, filtering='ideal'):
+        """Internal function to compute the power spectrum numerator. This is used by the Pk_numerator and Pk_numerator_ideal functions.
+        
+        If data2 is not None, we compute the cross-spectra between maps."""
         assert filtering in ['ideal','Sinv'], "Unknown filtering option supplied!"
+        
+        # Check if we're computing cross-spectra
+        if data2 is not None:
+            assert not self.odd_l, "Cross-spectra are only implemented for even ell-modes!"
+            if data2 is data:
+                cross_spec = False
+                data2 = None
+            else:
+                cross_spec = True
+        else:
+            cross_spec = False
 
         # Check input data type and convert to float64 if necessary
         if not self.base.backend=='jax':
             assert type(data[0,0,0]) in [np.float32, np.float64], "Data must be of type float32 or float64!"
+            if cross_spec: assert type(data2[0,0,0]) in [np.float32, np.float64], "Data2 must be of type float32 or float64!"
+                
         if type(data[0,0,0])==np.float32: 
             data = np.asarray(data, order='C', dtype=np.float64)
+        if cross_spec:
+            if type(data2[0,0,0])==np.float32: 
+                data2 = np.asarray(data2, order='C', dtype=np.float64)
 
         # Apply filtering and transform to Fourier-space, optionally removing the pixel window function
         if self.base.pixel_window!='none':
             
             # Transform to Fourier-space
             data_fourier = self.base.map_utils.div_fourier(self.base.to_fourier(data), self.base.pixel_window_grid)
+            if cross_spec: data2_fourier = self.base.map_utils.div_fourier(self.base.to_fourier(data2), self.base.pixel_window_grid)
             
             if filtering=='ideal':
                 # Filter by 1/P_fid
                 Sinv_data_fourier = self.base.map_utils.prod_fourier(data_fourier, self.base.invPk0_grid)/np.sqrt(self.sq_mask_mean)
+                if cross_spec: Sinv_data2_fourier = self.base.map_utils.prod_fourier(data2_fourier, self.base.invPk0_grid)/np.sqrt(self.sq_mask_mean)
+                    
             elif filtering=='Sinv':
                 Sinv_data_fourier = self.applySinv(data_fourier, input_type='fourier', output_type='fourier')
+                if cross_spec: Sinv_data2_fourier = self.applySinv(data2_fourier, input_type='fourier', output_type='fourier')
         
         else:
             if filtering=='ideal':
                 # Filter by 1/P_fid
                 Sinv_data_fourier = self.base.map_utils.prod_fourier(self.base.to_fourier(data),self.base.invPk0_grid)/np.sqrt(self.sq_mask_mean)
+                if cross_spec: Sinv_data2_fourier = self.base.map_utils.prod_fourier(self.base.to_fourier(data2),self.base.invPk0_grid)/np.sqrt(self.sq_mask_mean)
             elif filtering=='Sinv':
                 Sinv_data_fourier = self.applySinv(data, input_type='real', output_type='fourier')
+                if cross_spec: Sinv_data2_fourier = self.applySinv(data2, input_type='real', output_type='fourier')
             
         # Compute real-space map where necessary
         if (self.base.sightline=='local' and self.lmax>0):
             Sinv_data_real = self.base.to_real(Sinv_data_fourier)
+            if cross_spec: Sinv_data2_real = self.base.to_real(Sinv_data2_fourier)
         
         # Define output array
         if filtering=='Sinv':
@@ -650,7 +1173,10 @@ class PSpec():
             Pk_out = np.zeros(self.Nl_even*self.Nk, dtype=np.float64)    
         
         # Compute monopole
-        Pk_out[:self.Nk] = 0.5*self.base.integrator.integrate(Sinv_data_fourier, self.k_bins, 0)
+        if cross_spec:
+            Pk_out[:self.Nk] += 0.5*self.base.integrator.cross_integrate(Sinv_data_fourier, Sinv_data2_fourier, self.k_bins, 0)
+        else:
+            Pk_out[:self.Nk] = 0.5*self.base.integrator.integrate(Sinv_data_fourier, self.k_bins, 0)
         
         # Compute higher multipoles
         if self.lmax>0:
@@ -668,36 +1194,126 @@ class PSpec():
                 
                 if self.base.sightline=='global':
                     # Compute L_ell(mu)*|S^-1 d(k)|^2, integrated over k
-                    Pk_out[li*self.Nk:(li+1)*self.Nk] = 0.5*self.base.integrator.integrate(Sinv_data_fourier, self.k_bins, 2*li)                
+                    if cross_spec:
+                        Pk_out[li*self.Nk:(li+1)*self.Nk] = 0.5*self.base.integrator.cross_integrate(Sinv_data_fourier, Sinv_data2_fourier, self.k_bins, 2*li)                
+                    else:
+                        Pk_out[li*self.Nk:(li+1)*self.Nk] = 0.5*self.base.integrator.integrate(Sinv_data_fourier, self.k_bins, 2*li)                
                 else:
-                    # Compute Sum_m Y_lm(k)[S^-1 d](k)[S^-1 d]^*_lm(k)
-                    lm_sum = self.base.apply_fourier_harmonics(Sinv_data_real, self.Ylm_real[l_factor*li], self.Ylm_fourier[l_factor*li])
-                                            
-                    # Ensure output is real
-                    if (filtering=='Sinv' and self.odd_l and li%2==1):
-                        lm_sum *= -1.0j
+                    if cross_spec:
+                        # Compute Sum_m Y_lm(k)[S^-1 d2]^*_lm(k)
+                        lm_sum2 = self.base.apply_fourier_harmonics(Sinv_data2_real, self.Ylm_real[l_factor*li], self.Ylm_fourier[l_factor*li])
+                        
+                        # Ensure output is real
+                        if (filtering=='Sinv' and self.odd_l and li%2==1):
+                            lm_sum2 *= -1.0j
+                           
+                        # Apply binning
+                        Pk_out[li*self.Nk:li*self.Nk+self.Nk] = 0.25*self.base.integrator.cross_integrate(Sinv_data_fourier, lm_sum2, self.k_bins, 0)
+                        
+                        # Repeat for d <-> d2
+                        lm_sum = self.base.apply_fourier_harmonics(Sinv_data_real, self.Ylm_real[l_factor*li], self.Ylm_fourier[l_factor*li])
+                        if (filtering=='Sinv' and self.odd_l and li%2==1):
+                            lm_sum *= -1.0j
+                        
+                        # Apply binning
+                        Pk_out[li*self.Nk:li*self.Nk+self.Nk] += 0.25*self.base.integrator.cross_integrate(Sinv_data2_fourier, lm_sum, self.k_bins, 0)
+                        
+                    else:
+                        # Compute Sum_m Y_lm(k)[S^-1 d]^*_lm(k)
+                        lm_sum = self.base.apply_fourier_harmonics(Sinv_data_real, self.Ylm_real[l_factor*li], self.Ylm_fourier[l_factor*li])
+                                                
+                        # Ensure output is real
+                        if (filtering=='Sinv' and self.odd_l and li%2==1):
+                            lm_sum *= -1.0j
+                        
+                        # Apply binning
+                        Pk_out[li*self.Nk:li*self.Nk+self.Nk] = 0.5*self.base.integrator.cross_integrate(Sinv_data_fourier, lm_sum, self.k_bins, 0)
+            
+        # Add normalization
+        Pk_out *= self.base.volume/self.base.gridsize.prod()**2
+        
+        return Pk_out
+       
+    def _compute_pk_numerator_fnl(self, data):
+        """Internal function to compute the power spectrum numerator, assuming fNL optimal weights."""
+        assert self.lmax in [0,2], "Higher multipoles not yet implemented!"
+        
+        # Check input data type and convert to float64 if necessary
+        if not self.base.backend=='jax':
+            assert type(data[0,0,0]) in [np.float32, np.float64], "Data must be of type float32 or float64!"
+                
+        if type(data[0,0,0])==np.float32: 
+            data = np.asarray(data, order='C', dtype=np.float64)
+        
+        # Apply filtering and transform to Fourier-space, optionally removing the pixel window function
+        if self.base.pixel_window!='none':
+            
+            # Transform to Fourier-space
+            data_fourier = self.base.map_utils.div_fourier(self.base.to_fourier(data), self.base.pixel_window_grid)
+            
+            Sinv_data_fourier_wtilde = self.applySinv(data_fourier, input_type='fourier', output_type='fourier', filter_type='wtilde')
+            Sinv_data_fourier_w0 = self.applySinv(data_fourier, input_type='fourier', output_type='fourier', filter_type='w0')
+            if self.lmax>0:
+                Sinv_data_fourier_w2 = self.applySinv(data_fourier, input_type='fourier', output_type='fourier', filter_type='w2')
+    
+        else:
+            Sinv_data_fourier_wtilde = self.applySinv(data, input_type='real', output_type='fourier', filter_type='wtilde')
+            Sinv_data_fourier_w0 = self.applySinv(data, input_type='real', output_type='fourier', filter_type='w0')
+            if self.lmax>0:
+                Sinv_data_fourier_w2 = self.applySinv(data, input_type='real', output_type='fourier', filter_type='w2')
+        
+        # Compute real-space map where necessary
+        if (self.base.sightline=='local' and self.lmax>0):
+            Sinv_data_real_w2 = self.base.to_real(Sinv_data_fourier_w2)
+            
+        # Define output array
+        Pk_out = np.zeros(self.N_bins, dtype=np.float64)
+        
+        # Compute monopole
+        Pk_out[:self.Nk] = 0.5*self.base.integrator.cross_integrate(Sinv_data_fourier_wtilde, Sinv_data_fourier_w0, self.k_bins, 0)
+        
+        # Compute higher multipoles
+        if self.lmax>0:
+            
+            # Check number of bins and ordering of spherical harmonic grids
+            Nl = self.Nl
+            l_factor = (2-self.odd_l)
+                
+            # Iterate over multipoles
+            for li in range(1,Nl):
+                
+                if self.base.sightline=='global':
+                    # Compute L_ell(mu)*|S^-1 d(k)|^2, integrated over k
+                    assert li==1
+                    Pk_out[li*self.Nk:(li+1)*self.Nk] = 0.5*self.base.integrator.cross_integrate(Sinv_data_fourier_wtilde, Sinv_data_fourier_w2, self.k_bins, 2*li)                
+                else:
+                    # Compute Sum_m Y_lm(k)[S^-1 d]^*_lm(k)
+                    assert li==1
+                    lm_sum = self.base.apply_fourier_harmonics(Sinv_data_real_w2, self.Ylm_real[l_factor*li], self.Ylm_fourier[l_factor*li])
                     
                     # Apply binning
-                    Pk_out[li*self.Nk:li*self.Nk+self.Nk] = 0.5*self.base.integrator.cross_integrate(Sinv_data_fourier, lm_sum, self.k_bins, 0)
-        
+                    Pk_out[li*self.Nk:li*self.Nk+self.Nk] = 0.5*self.base.integrator.cross_integrate(Sinv_data_fourier_wtilde, lm_sum, self.k_bins, 0)
+            
         # Add normalization
         Pk_out *= self.base.volume/self.base.gridsize.prod()**2
         
         return Pk_out
               
     ### IDEAL ESTIMATOR
-    def Pk_numerator_ideal(self, data):
+    def Pk_numerator_ideal(self, data, data2=None):
         """Compute the numerator of the idealized power spectrum estimator, weighting by 1/P_fid(k) within each bin. 
         
         The estimator does *not* use the mask or S^-1 weighting schemes. It also applies only for even ell. We normalize by the mean of the squared mask.
         
-        This can compute the ideal power spectrum of simulation volumes, or, for suitably normalized input, the FKP power spectrum.
+        This can compute the ideal power spectrum of simulation volumes, or, for suitably normalized input, the FKP power spectrum. 
+        
+        If data2 is not None, we compute the cross-spectrum between the two datasets.
         """
         if not self.const_mask:
             assert data.shape == self.mask.shape, "Data must have same shape as the mask!"
         
         # Send to internal function
-        return self._compute_pk_numerator(data, filtering='ideal') 
+        return self._compute_pk_numerator(data, data2=data2, filtering='ideal') 
                 
     def compute_fisher_ideal(self, discreteness_correction=True, Pk_fid='default'):
         """This computes the idealized Fisher matrix for the power spectrum, weighting by 1/P_fid(k) within each bin. 
@@ -754,7 +1370,7 @@ class PSpec():
     def Pk_ideal(self, data, fish_ideal=[], discreteness_correction=True):
         """Compute the (normalized) idealized power spectrum estimator, weighting by 1/P_fid(k) within each bin. 
         
-        The estimator does *not* use the mask or S_inv weighting schemes (except for normalizing by < mask^2 >. It also applies only for even ell.
+        The estimator does *not* use the mask or S_inv weighting schemes (except for normalizing by < mask^2 >). It also applies only for even ell.
         
         We optionally include discreteness corrections in the Fisher matrix for ell>0.
     

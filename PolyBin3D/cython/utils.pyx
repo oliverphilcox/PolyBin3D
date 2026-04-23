@@ -608,6 +608,94 @@ cpdef dict compute_real_harmonics(double[:,:,:,::1] coordinates, int lmax, bint 
 
     return Ylms
 
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.cdivision(True)
+cpdef np.ndarray compute_single_ylm(double[:,:,::1] cx, double[:,:,::1] cy, double[:,:,::1] cz,
+                                     int l, int m, int nthreads):
+    """Compute a single real spherical harmonic component Y_{l,m} on the coordinate grid.
+
+    This avoids allocating the full (2l+1, n1, n2, n3) array, returning only one (n1, n2, n3) component.
+    The m index matches the ordering used in compute_real_harmonics.
+    """
+    cdef int i1, i2, i3
+    cdef int n1 = cx.shape[0], n2 = cx.shape[1], n3 = cx.shape[2]
+    cdef double xh, yh, zh, norm
+    cdef np.ndarray[np.float64_t, ndim=3] output = np.empty((n1, n2, n3), dtype=np.float64)
+    cdef double[:,:,::1] out = output
+
+    for i1 in prange(n1, nogil=True, schedule='static', num_threads=nthreads):
+        for i2 in xrange(n2):
+            for i3 in xrange(n3):
+                norm = sqrt(cx[i1,i2,i3]*cx[i1,i2,i3] + cy[i1,i2,i3]*cy[i1,i2,i3] + cz[i1,i2,i3]*cz[i1,i2,i3])
+                if norm == 0:
+                    xh = 0.0
+                    yh = 0.0
+                    zh = 0.0
+                else:
+                    xh = cx[i1,i2,i3] / norm
+                    yh = cy[i1,i2,i3] / norm
+                    zh = cz[i1,i2,i3] / norm
+
+                if l == 1:
+                    if m == 0:
+                        out[i1,i2,i3] = yh
+                    elif m == 1:
+                        out[i1,i2,i3] = zh
+                    elif m == 2:
+                        out[i1,i2,i3] = xh
+
+                elif l == 2:
+                    if m == 0:
+                        out[i1,i2,i3] = 6. * xh * yh * sqrt(1. / 12.)
+                    elif m == 1:
+                        out[i1,i2,i3] = 3. * yh * zh * sqrt(1. / 3.)
+                    elif m == 2:
+                        out[i1,i2,i3] = zh*zh - xh*xh / 2. - yh*yh / 2.
+                    elif m == 3:
+                        out[i1,i2,i3] = 3. * xh * zh * sqrt(1. / 3.)
+                    elif m == 4:
+                        out[i1,i2,i3] = (3. * xh*xh - 3. * yh*yh) * sqrt(1. / 12.)
+
+                elif l == 3:
+                    if m == 0:
+                        out[i1,i2,i3] = (45. * xh*xh * yh - 15. * yh*yh*yh) * sqrt(1. / 360.)
+                    elif m == 1:
+                        out[i1,i2,i3] = (30. * xh * yh * zh) * sqrt(1. / 60.)
+                    elif m == 2:
+                        out[i1,i2,i3] = (-1.5 * xh*xh * yh - 1.5 * yh*yh*yh + 6. * yh * zh*zh) * sqrt(1. / 6.)
+                    elif m == 3:
+                        out[i1,i2,i3] = -1.5 * xh*xh * zh - 1.5 * yh*yh * zh + zh*zh*zh
+                    elif m == 4:
+                        out[i1,i2,i3] = (-1.5 * xh*xh*xh - 1.5 * xh * yh*yh + 6. * xh * zh*zh) * sqrt(1. / 6.)
+                    elif m == 5:
+                        out[i1,i2,i3] = (15. * xh*xh * zh - 15. * yh*yh * zh) * sqrt(1. / 60.)
+                    elif m == 6:
+                        out[i1,i2,i3] = (15. * xh*xh*xh - 45. * xh * yh*yh) * sqrt(1. / 360.)
+
+                elif l == 4:
+                    if m == 0:
+                        out[i1,i2,i3] = (420. * xh*xh*xh * yh - 420. * xh * yh*yh*yh) * sqrt(1. / 20160.)
+                    elif m == 1:
+                        out[i1,i2,i3] = (315. * xh*xh * yh * zh - 105. * yh*yh*yh * zh) * sqrt(1. / 2520.)
+                    elif m == 2:
+                        out[i1,i2,i3] = (-15. * xh*xh*xh * yh - 15. * xh * yh*yh*yh + 90. * xh * yh * zh*zh) * sqrt(1. / 180.)
+                    elif m == 3:
+                        out[i1,i2,i3] = (-7.5 * xh*xh * yh * zh - 7.5 * yh*yh*yh * zh + 10. * yh * zh*zh*zh) * sqrt(1. / 10.)
+                    elif m == 4:
+                        out[i1,i2,i3] = 35. / 8. * zh*zh*zh*zh - 15. / 4. * zh*zh + 3. / 8.
+                    elif m == 5:
+                        out[i1,i2,i3] = (-15. / 2. * xh*xh*xh * zh - 15. * xh * yh*yh * zh / 2. + 10. * xh * zh*zh*zh) * sqrt(1. / 10.)
+                    elif m == 6:
+                        out[i1,i2,i3] = (-15. / 2. * xh*xh*xh*xh + 45. * xh*xh * zh*zh + 15. / 2. * yh*yh*yh*yh - 45. * yh*yh * zh*zh) * sqrt(1. / 180.)
+                    elif m == 7:
+                        out[i1,i2,i3] = (105. * xh*xh*xh * zh - 315. * xh * yh*yh * zh) * sqrt(1. / 2520.)
+                    elif m == 8:
+                        out[i1,i2,i3] = (105. * xh*xh*xh*xh - 630. * xh*xh * yh*yh + 105. * yh*yh*yh*yh) * sqrt(1. / 20160.)
+
+    return output
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.cdivision(True)
@@ -632,6 +720,33 @@ cpdef np.ndarray[np.float64_t,ndim=1] assemble_b3(double[:,:,:,:,::1] g_maps, lo
                 for i3 in xrange(n3):
                     tmp = tmp+g_maps[0][bin1][i1,i2,i3]*g_maps[0][bin2][i1,i2,i3]*g_maps[l//2][bin3][i1,i2,i3]
         out[index] = tmp
+    
+    return out
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.cdivision(True)
+cpdef np.ndarray[np.float64_t,ndim=1] assemble_b3_asym(double[:,:,:,:,::1] g_maps1, double[:,:,:,:,::1] g_maps2, double[:,:,:,:,::1] g_maps3, long[:,::1] all_bins, int nthreads):
+    """Assemble the bispectrum numerator from a set of g_lb(x) maps without permutation symmetries."""
+    cdef long i1, i2, i3, n1 = g_maps1.shape[2], n2 = g_maps1.shape[3], n3 = g_maps1.shape[4]
+    cdef long index, l, bin1, bin2, bin3, n_bins = len(all_bins)
+    cdef double tmp
+    cdef np.ndarray[np.float64_t,ndim=1] out=np.zeros(n_bins, dtype=np.float64)
+
+    for index in prange(n_bins,nogil=True, schedule='static', num_threads=nthreads):
+        # Define bins
+        bin1 = all_bins[index][0]
+        bin2 = all_bins[index][1]
+        bin3 = all_bins[index][2]
+        l = all_bins[index][3]
+        
+        # Sum over maps
+        tmp = 0
+        for i1 in xrange(n1):
+            for i2 in xrange(n2):
+                for i3 in xrange(n3):
+                    tmp = tmp+g_maps1[0][bin1][i1,i2,i3]*g_maps2[0][bin2][i1,i2,i3]*g_maps3[l//2][bin3][i1,i2,i3]+g_maps1[0][bin1][i1,i2,i3]*g_maps3[0][bin2][i1,i2,i3]*g_maps2[l//2][bin3][i1,i2,i3]+g_maps2[0][bin1][i1,i2,i3]*g_maps1[0][bin2][i1,i2,i3]*g_maps3[l//2][bin3][i1,i2,i3]+g_maps2[0][bin1][i1,i2,i3]*g_maps3[0][bin2][i1,i2,i3]*g_maps1[l//2][bin3][i1,i2,i3]+g_maps3[0][bin1][i1,i2,i3]*g_maps1[0][bin2][i1,i2,i3]*g_maps2[l//2][bin3][i1,i2,i3]+g_maps3[0][bin1][i1,i2,i3]*g_maps2[0][bin2][i1,i2,i3]*g_maps1[l//2][bin3][i1,i2,i3]
+        out[index] = tmp/6.
     
     return out
 

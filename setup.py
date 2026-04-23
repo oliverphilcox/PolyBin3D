@@ -9,8 +9,8 @@ for module in modules:
         Extension(
             name=f'PolyBin3D.cython.{module}',
             sources=[f'PolyBin3D/cython/{module}.pyx'],
-            libraries=['mvec','m'],
-            extra_compile_args=["-fopenmp","-O3", "-ffast-math", "-march=broadwell"],
+            libraries=['m'],
+            extra_compile_args=["-fopenmp","-O3", "-ffast-math", "-march=haswell"],
             extra_link_args=["-fopenmp"],
             define_macros=[('NPY_NO_DEPRECATED_API', 'NPY_1_7_API_VERSION')],
             include_dirs=[numpy.get_include()],

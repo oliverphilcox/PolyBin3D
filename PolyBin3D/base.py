@@ -3,6 +3,60 @@
 
 import numpy as np, os, time, scipy
 
+
+class LazyYlmComponents():
+    """Compute individual Y_lm components on demand instead of storing the full (2l+1, n1, n2, n3) array.
+
+    Implements __len__ and __getitem__ so it is a drop-in replacement for the ndarray Ylm[l].
+    Each __getitem__ call allocates one (n1, n2, n3) array via Cython, then the caller
+    can let it be garbage-collected after use.
+    """
+    def __init__(self, coord_list, l, utils, nthreads):
+        self._cx = np.ascontiguousarray(coord_list[0])
+        self._cy = np.ascontiguousarray(coord_list[1])
+        self._cz = np.ascontiguousarray(coord_list[2])
+        self._l = l
+        self._utils = utils
+        self._nthreads = nthreads
+
+    def __len__(self):
+        return 2 * self._l + 1
+
+    def __getitem__(self, m):
+        return self._utils.compute_single_ylm(self._cx, self._cy, self._cz,
+                                               self._l, m, self._nthreads)
+
+
+class LazyYlm():
+    """Dict-like object that returns LazyYlmComponents for each l value.
+
+    Drop-in replacement for the dict returned by compute_real_harmonics.
+    No Ylm data is stored; each access computes a single (l,m) component via Cython.
+    """
+    def __init__(self, coord_list, lmax, odd_l, utils, nthreads):
+        self._coord_list = coord_list
+        self._lmax = lmax
+        self._odd_l = odd_l
+        self._utils = utils
+        self._nthreads = nthreads
+
+    def __getitem__(self, l):
+        return LazyYlmComponents(self._coord_list, l, self._utils, self._nthreads)
+
+    def __contains__(self, l):
+        if l < 1 or l > self._lmax:
+            return False
+        if not self._odd_l and l % 2 == 1:
+            return False
+        return True
+
+    def keys(self):
+        if self._odd_l:
+            return range(1, self._lmax + 1)
+        else:
+            return range(2, self._lmax + 1, 2)
+
+
 class PolyBin3D():
     """Base class for PolyBin3D.
     

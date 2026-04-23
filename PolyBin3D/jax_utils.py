@@ -291,6 +291,20 @@ def assemble_b3(g_maps, all_bins, nthreads):
     return out
 
 @jax.jit
+def assemble_b3_asym(g_maps1, g_maps2, g_maps3, all_bins, nthreads):
+    """Assemble the bispectrum numerator from a set of g_lb(x) maps without permutation symmetries."""
+    n_bins = len(all_bins)
+    out = jnp.zeros(n_bins, dtype=dfloat)
+
+    for index in range(n_bins):
+        # Define bins
+        bin1,bin2,bin3,l = all_bins[index]
+        
+        # Sum over maps
+        out = out.at[index].set(1./6.*jnp.sum(g_maps1[0][bin1]*g_maps2[0][bin2]*g_maps3[l//2][bin3]+g_maps1[0][bin1]*g_maps3[0][bin2]*g_maps2[l//2][bin3]+g_maps2[0][bin1]*g_maps1[0][bin2]*g_maps3[l//2][bin3]+g_maps2[0][bin1]*g_maps3[0][bin2]*g_maps1[l//2][bin3]+g_maps3[0][bin1]*g_maps1[0][bin2]*g_maps2[l//2][bin3]+g_maps3[0][bin1]*g_maps2[0][bin2]*g_maps1[l//2][bin3]))
+    return out
+
+@jax.jit
 def jax_fft(x):
     return jnp.fft.fftn(x,axes=(-3,-2,-1))
 
