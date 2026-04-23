@@ -10,6 +10,8 @@ class LazyYlmComponents():
     Implements __len__ and __getitem__ so it is a drop-in replacement for the ndarray Ylm[l].
     Each __getitem__ call allocates one (n1, n2, n3) array via Cython, then the caller
     can let it be garbage-collected after use.
+
+    Accepts either 1D arrays (from meshgrid decomposition) or 3D arrays.
     """
     def __init__(self, coord_list, l, utils, nthreads):
         self._cx = np.ascontiguousarray(coord_list[0])
@@ -18,13 +20,18 @@ class LazyYlmComponents():
         self._l = l
         self._utils = utils
         self._nthreads = nthreads
+        self._use_1d = (self._cx.ndim == 1)
 
     def __len__(self):
         return 2 * self._l + 1
 
     def __getitem__(self, m):
-        return self._utils.compute_single_ylm(self._cx, self._cy, self._cz,
-                                               self._l, m, self._nthreads)
+        if self._use_1d:
+            return self._utils.compute_single_ylm_1d(self._cx, self._cy, self._cz,
+                                                      self._l, m, self._nthreads)
+        else:
+            return self._utils.compute_single_ylm(self._cx, self._cy, self._cz,
+                                                   self._l, m, self._nthreads)
 
 
 class LazyYlm():
@@ -127,25 +134,24 @@ class PolyBin3D():
             self.Pfid = np.asarray(Pk)
         self.kmin, self.kmax = np.min(self.Pfid[0,0]), np.max(self.Pfid[0,-1])
 
-        # Compute the real-space coordinate grid
+        # Compute the real-space coordinate grid (store only 1D arrays to save memory)
         if self.sightline=='local': # not used else!
             offset = self.boxcenter #+0.5*self.boxsize/self.gridsize # removing this for consistency with pypower
-            r_arrs = [np.fft.fftshift(np.arange(-self.gridsize[i]//2,self.gridsize[i]//2))*self.boxsize[i]/self.gridsize[i]+offset[i] for i in range(3)]
-            self.r_grids = np.meshgrid(*r_arrs,indexing='ij')
+            self.r_arrs = [np.ascontiguousarray(np.fft.fftshift(np.arange(-self.gridsize[i]//2,self.gridsize[i]//2))*self.boxsize[i]/self.gridsize[i]+offset[i]) for i in range(3)]
         print("\n# Dimensions: [%.2e, %.2e, %.2e] Mpc/h"%(self.boxsize[0],self.boxsize[1],self.boxsize[2]))
         print("# Center: [%.2e, %.2e, %.2e] Mpc/h"%(self.boxcenter[0],self.boxcenter[1],self.boxcenter[2]))
         print("# Line-of-sight: %s"%self.sightline)
-        
-        # Compute the Fourier-space coordinate grid
+
+        # Compute the Fourier-space coordinate grid (store only 1D arrays to save memory)
         if self.real_fft:
-            k_arrs = [np.fft.fftshift(np.arange(-self.gridsize[i]//2,self.gridsize[i]//2))*self.kF[i] for i in range(2)]
-            k_arrs += [np.arange(0,self.gridsize[2]//2+1)*self.kF[2]]
+            self.k_arrs = [np.ascontiguousarray(np.fft.fftshift(np.arange(-self.gridsize[i]//2,self.gridsize[i]//2))*self.kF[i]) for i in range(2)]
+            self.k_arrs += [np.ascontiguousarray(np.arange(0,self.gridsize[2]//2+1)*self.kF[2])]
         else:
-            k_arrs = [np.fft.fftshift(np.arange(-self.gridsize[i]//2,self.gridsize[i]//2))*self.kF[i] for i in range(3)]
-        self.k_grids = np.meshgrid(*k_arrs,indexing='ij')
-        self.modk_grid = np.sqrt(self.k_grids[0]**2+self.k_grids[1]**2+self.k_grids[2]**2)
+            self.k_arrs = [np.ascontiguousarray(np.fft.fftshift(np.arange(-self.gridsize[i]//2,self.gridsize[i]//2))*self.kF[i]) for i in range(3)]
+        # Compute |k| grid from 1D arrays via broadcasting (avoids storing 3D k_grids)
+        self.modk_grid = np.sqrt(self.k_arrs[0][:,None,None]**2 + self.k_arrs[1][None,:,None]**2 + self.k_arrs[2][None,None,:]**2)
         if self.real_fft:
-            self.degeneracy_factor = np.asarray(1.+(self.k_grids[2]>0), dtype=np.float64)
+            self.degeneracy_factor = np.broadcast_to(np.asarray(1.+(self.k_arrs[2]>0), dtype=np.float64)[None,None,:], self.modk_grid.shape).copy()
         else:
             self.degeneracy_factor = None
         
@@ -166,8 +172,14 @@ class PolyBin3D():
             sight_vector = np.asarray([0.,0.,1.])
         else:
             sight_vector = self.boxcenter/np.sqrt(np.sum(self.boxcenter**2))
+        # Compute mu_k = (k . sight) / |k| from 1D arrays via broadcasting
+        k_dot_sight = (sight_vector[0] * self.k_arrs[0][:,None,None]
+                     + sight_vector[1] * self.k_arrs[1][None,:,None]
+                     + sight_vector[2] * self.k_arrs[2][None,None,:])
         self.muk_grid = np.zeros(self.modk_grid.shape)
-        self.muk_grid[self.modk_grid!=0] = np.sum(sight_vector[:,None]*np.asarray(self.k_grids)[:,self.modk_grid!=0],axis=0)/self.modk_grid[self.modk_grid!=0]
+        mask = self.modk_grid != 0
+        self.muk_grid[mask] = k_dot_sight[mask] / self.modk_grid[mask]
+        del k_dot_sight, mask
         
         # Set-up the FFT calculations
         self._fft_setup()

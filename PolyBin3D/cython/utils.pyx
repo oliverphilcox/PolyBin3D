@@ -696,6 +696,98 @@ cpdef np.ndarray compute_single_ylm(double[:,:,::1] cx, double[:,:,::1] cy, doub
 
     return output
 
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.cdivision(True)
+cpdef np.ndarray compute_single_ylm_1d(double[::1] cx, double[::1] cy, double[::1] cz,
+                                        int l, int m, int nthreads):
+    """Compute a single real spherical harmonic component Y_{l,m} from 1D coordinate arrays.
+
+    Takes 1D arrays cx(n1), cy(n2), cz(n3) representing the separable grid coordinates
+    (as produced by meshgrid with 'ij' indexing). Returns a 3D (n1, n2, n3) array.
+    """
+    cdef int i1, i2, i3
+    cdef int n1 = cx.shape[0], n2 = cy.shape[0], n3 = cz.shape[0]
+    cdef double xh, yh, zh, norm, cx_i1, cy_i2, cz_i3
+    cdef np.ndarray[np.float64_t, ndim=3] output = np.empty((n1, n2, n3), dtype=np.float64)
+    cdef double[:,:,::1] out = output
+
+    for i1 in prange(n1, nogil=True, schedule='static', num_threads=nthreads):
+        cx_i1 = cx[i1]
+        for i2 in xrange(n2):
+            cy_i2 = cy[i2]
+            for i3 in xrange(n3):
+                cz_i3 = cz[i3]
+                norm = sqrt(cx_i1*cx_i1 + cy_i2*cy_i2 + cz_i3*cz_i3)
+                if norm == 0:
+                    xh = 0.0
+                    yh = 0.0
+                    zh = 0.0
+                else:
+                    xh = cx_i1 / norm
+                    yh = cy_i2 / norm
+                    zh = cz_i3 / norm
+
+                if l == 1:
+                    if m == 0:
+                        out[i1,i2,i3] = yh
+                    elif m == 1:
+                        out[i1,i2,i3] = zh
+                    elif m == 2:
+                        out[i1,i2,i3] = xh
+
+                elif l == 2:
+                    if m == 0:
+                        out[i1,i2,i3] = 6. * xh * yh * sqrt(1. / 12.)
+                    elif m == 1:
+                        out[i1,i2,i3] = 3. * yh * zh * sqrt(1. / 3.)
+                    elif m == 2:
+                        out[i1,i2,i3] = zh*zh - xh*xh / 2. - yh*yh / 2.
+                    elif m == 3:
+                        out[i1,i2,i3] = 3. * xh * zh * sqrt(1. / 3.)
+                    elif m == 4:
+                        out[i1,i2,i3] = (3. * xh*xh - 3. * yh*yh) * sqrt(1. / 12.)
+
+                elif l == 3:
+                    if m == 0:
+                        out[i1,i2,i3] = (45. * xh*xh * yh - 15. * yh*yh*yh) * sqrt(1. / 360.)
+                    elif m == 1:
+                        out[i1,i2,i3] = (30. * xh * yh * zh) * sqrt(1. / 60.)
+                    elif m == 2:
+                        out[i1,i2,i3] = (-1.5 * xh*xh * yh - 1.5 * yh*yh*yh + 6. * yh * zh*zh) * sqrt(1. / 6.)
+                    elif m == 3:
+                        out[i1,i2,i3] = -1.5 * xh*xh * zh - 1.5 * yh*yh * zh + zh*zh*zh
+                    elif m == 4:
+                        out[i1,i2,i3] = (-1.5 * xh*xh*xh - 1.5 * xh * yh*yh + 6. * xh * zh*zh) * sqrt(1. / 6.)
+                    elif m == 5:
+                        out[i1,i2,i3] = (15. * xh*xh * zh - 15. * yh*yh * zh) * sqrt(1. / 60.)
+                    elif m == 6:
+                        out[i1,i2,i3] = (15. * xh*xh*xh - 45. * xh * yh*yh) * sqrt(1. / 360.)
+
+                elif l == 4:
+                    if m == 0:
+                        out[i1,i2,i3] = (420. * xh*xh*xh * yh - 420. * xh * yh*yh*yh) * sqrt(1. / 20160.)
+                    elif m == 1:
+                        out[i1,i2,i3] = (315. * xh*xh * yh * zh - 105. * yh*yh*yh * zh) * sqrt(1. / 2520.)
+                    elif m == 2:
+                        out[i1,i2,i3] = (-15. * xh*xh*xh * yh - 15. * xh * yh*yh*yh + 90. * xh * yh * zh*zh) * sqrt(1. / 180.)
+                    elif m == 3:
+                        out[i1,i2,i3] = (-7.5 * xh*xh * yh * zh - 7.5 * yh*yh*yh * zh + 10. * yh * zh*zh*zh) * sqrt(1. / 10.)
+                    elif m == 4:
+                        out[i1,i2,i3] = 35. / 8. * zh*zh*zh*zh - 15. / 4. * zh*zh + 3. / 8.
+                    elif m == 5:
+                        out[i1,i2,i3] = (-15. / 2. * xh*xh*xh * zh - 15. * xh * yh*yh * zh / 2. + 10. * xh * zh*zh*zh) * sqrt(1. / 10.)
+                    elif m == 6:
+                        out[i1,i2,i3] = (-15. / 2. * xh*xh*xh*xh + 45. * xh*xh * zh*zh + 15. / 2. * yh*yh*yh*yh - 45. * yh*yh * zh*zh) * sqrt(1. / 180.)
+                    elif m == 7:
+                        out[i1,i2,i3] = (105. * xh*xh*xh * zh - 315. * xh * yh*yh * zh) * sqrt(1. / 2520.)
+                    elif m == 8:
+                        out[i1,i2,i3] = (105. * xh*xh*xh*xh - 630. * xh*xh * yh*yh + 105. * yh*yh*yh*yh) * sqrt(1. / 20160.)
+
+    return output
+
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.cdivision(True)

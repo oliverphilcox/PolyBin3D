@@ -108,7 +108,7 @@ class PSpec():
             assert hasattr(self,'mask_IC'), "Need to supply mask_IC!"
             assert len(radial_bins_RIC)>0, "Radial bins need to be supplied for radial integral constraint!"
             print("Accounting for radial integral constraint across %d bins"%(len(radial_bins_RIC)-1))
-            self.base.modr_grid = np.sqrt(self.base.r_grids[0]**2.+self.base.r_grids[1]**2.+self.base.r_grids[2]**2.)
+            self.base.modr_grid = np.sqrt(self.base.r_arrs[0][:,None,None]**2.+self.base.r_arrs[1][None,:,None]**2.+self.base.r_arrs[2][None,None,:]**2.)
             self.radial_bins_RIC = radial_bins_RIC
             
         # Define spherical harmonics [for computing power spectrum multipoles]
@@ -116,8 +116,8 @@ class PSpec():
         # saving ~99 GB for lmax=4 on large grids.
         if self.base.sightline=='local' and self.lmax>0:
             print("Generating spherical harmonics (lazy)")
-            self.Ylm_real = LazyYlm(self.base.r_grids, self.lmax, self.odd_l, self.base.utils, self.base.nthreads)
-            self.Ylm_fourier = LazyYlm(self.base.k_grids, self.lmax, self.odd_l, self.base.utils, self.base.nthreads)
+            self.Ylm_real = LazyYlm(self.base.r_arrs, self.lmax, self.odd_l, self.base.utils, self.base.nthreads)
+            self.Ylm_fourier = LazyYlm(self.base.k_arrs, self.lmax, self.odd_l, self.base.utils, self.base.nthreads)
         else:
             self.Ylm_real = None
             self.Ylm_fourier = None
@@ -198,7 +198,7 @@ class PSpec():
             assert lmax_theory<=4, "Higher-order effects not yet implemented!"
             if verb: print("Adding odd-ell wide-angle effects up to l = %d"%lmax_theory)
             if not hasattr(self.base,'modr_grid'):
-                self.base.modr_grid = np.sqrt(self.base.r_grids[0]**2.+self.base.r_grids[1]**2.+self.base.r_grids[2]**2.)
+                self.base.modr_grid = np.sqrt(self.base.r_arrs[0][:,None,None]**2.+self.base.r_arrs[1][None,:,None]**2.+self.base.r_arrs[2][None,None,:]**2.)
         else:
             if not self.odd_l:
                 assert lmax_theory%2==0, "Must use even lmax if not including wide-angle effects!"
@@ -284,8 +284,8 @@ class PSpec():
             if (not hasattr(self,'Ylm_real_theory') and not hasattr(self,'Ylm_fourier_theory')):
                 if (lmax_theory>self.lmax) or (odd_l_theory!=self.odd_l):
                     if verb: print("Generating spherical harmonics up to l = %d (lazy)"%lmax_theory)
-                    self.Ylm_real_theory = LazyYlm(self.base.r_grids, lmax_theory, odd_l_theory, self.base.utils, self.base.nthreads)
-                    self.Ylm_fourier_theory = LazyYlm(self.base.k_grids, lmax_theory, odd_l_theory, self.base.utils, self.base.nthreads)
+                    self.Ylm_real_theory = LazyYlm(self.base.r_arrs, lmax_theory, odd_l_theory, self.base.utils, self.base.nthreads)
+                    self.Ylm_fourier_theory = LazyYlm(self.base.k_arrs, lmax_theory, odd_l_theory, self.base.utils, self.base.nthreads)
                 else:
                     self.Ylm_real_theory = self.Ylm_real
                     self.Ylm_fourier_theory = self.Ylm_fourier
@@ -579,8 +579,8 @@ class PSpec():
             if (not hasattr(self,'Ylm_real_theory') and not hasattr(self,'Ylm_fourier_theory')):
                 if (lmax_theory>self.lmax) or (odd_l_theory!=self.odd_l):
                     if verb: print("Generating spherical harmonics up to l = %d (lazy)"%lmax_theory)
-                    self.Ylm_real_theory = LazyYlm(self.base.r_grids, lmax_theory, odd_l_theory, self.base.utils, self.base.nthreads)
-                    self.Ylm_fourier_theory = LazyYlm(self.base.k_grids, lmax_theory, odd_l_theory, self.base.utils, self.base.nthreads)
+                    self.Ylm_real_theory = LazyYlm(self.base.r_arrs, lmax_theory, odd_l_theory, self.base.utils, self.base.nthreads)
+                    self.Ylm_fourier_theory = LazyYlm(self.base.k_arrs, lmax_theory, odd_l_theory, self.base.utils, self.base.nthreads)
                 else:
                     self.Ylm_real_theory = self.Ylm_real
                     self.Ylm_fourier_theory = self.Ylm_fourier

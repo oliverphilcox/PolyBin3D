@@ -133,7 +133,7 @@ class BSpec():
             assert hasattr(self,'mask_IC'), "Need to supply mask_IC!"
             assert len(radial_bins_RIC)>0, "Radial bins need to be supplied for radial integral constraint!"
             print("Accounting for radial integral constraint across %d bins"%(len(radial_bins_RIC)-1))
-            self.base.modr_grid = np.sqrt(self.base.r_grids[0]**2.+self.base.r_grids[1]**2.+self.base.r_grids[2]**2.)
+            self.base.modr_grid = np.sqrt(self.base.r_arrs[0][:,None,None]**2.+self.base.r_arrs[1][None,:,None]**2.+self.base.r_arrs[2][None,None,:]**2.)
             self.radial_bins_RIC = radial_bins_RIC
           
         # Define fiducial power spectrum
@@ -160,13 +160,13 @@ class BSpec():
         # Uses lazy evaluation to avoid storing full Ylm arrays.
         if self.base.sightline=='local' and self.lmax>0:
             print("Generating spherical harmonics (lazy)")
-            self.Ylm_real = LazyYlm(self.base.r_grids, self.lmax, False, self.base.utils, self.base.nthreads)
+            self.Ylm_real = LazyYlm(self.base.r_arrs, self.lmax, False, self.base.utils, self.base.nthreads)
         else:
             self.Ylm_real = None
 
         # Define spherical harmonics in Fourier-space [needed for normalizations]
         if self.lmax>0:
-            self.Ylm_fourier = LazyYlm(self.base.k_grids, self.lmax, False, self.base.utils, self.base.nthreads)
+            self.Ylm_fourier = LazyYlm(self.base.k_arrs, self.lmax, False, self.base.utils, self.base.nthreads)
         else:
             self.Ylm_fourier = None
             
@@ -468,8 +468,8 @@ class BSpec():
         if (len(Pk_cov)-2)*2>self.lmax and self.base.sightline=='local':
             new_lmax = (len(Pk_cov)-2)*2
             print("Regenerating spherical harmonics for lmax=%d (lazy)"%new_lmax)
-            self.Ylm_fourier = LazyYlm(self.base.k_grids, new_lmax, False, self.base.utils, self.base.nthreads)
-            self.Ylm_real = LazyYlm(self.base.r_grids, new_lmax, False, self.base.utils, self.base.nthreads)
+            self.Ylm_fourier = LazyYlm(self.base.k_arrs, new_lmax, False, self.base.utils, self.base.nthreads)
+            self.Ylm_real = LazyYlm(self.base.r_arrs, new_lmax, False, self.base.utils, self.base.nthreads)
             
         return self._compute_fisher(seed, verb=verb, compute_cov=True, Pk_cov=Pk_cov)
     
