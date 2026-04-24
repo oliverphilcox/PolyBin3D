@@ -69,9 +69,9 @@ class PSpec():
         else:
             if type(mask)!=np.ndarray:
                 mask = np.array(mask)
-            self.mask = mask.astype(np.float64)
+            self.mask = np.asarray(mask, dtype=np.float64)
             if type(mask_IC)!=type(None):
-                self.mask_IC = mask_IC.astype(np.float64)
+                self.mask_IC = np.asarray(mask_IC, dtype=np.float64)
             # Check if window is uniform
             if np.std(self.mask)<1e-12:
                 self.const_mask = True
@@ -87,7 +87,7 @@ class PSpec():
         
         # Read-in shot-noise mask
         if type(mask_shot)!=type(None):
-            self.mask_shot = mask_shot.astype(np.float64)
+            self.mask_shot = np.asarray(mask_shot, dtype=np.float64)
         
         # Check S^-1 functions
         if self.applySinv is None:
@@ -108,8 +108,8 @@ class PSpec():
             assert hasattr(self,'mask_IC'), "Need to supply mask_IC!"
             assert len(radial_bins_RIC)>0, "Radial bins need to be supplied for radial integral constraint!"
             print("Accounting for radial integral constraint across %d bins"%(len(radial_bins_RIC)-1))
-            self.base.modr_grid = np.sqrt(self.base.r_arrs[0][:,None,None]**2.+self.base.r_arrs[1][None,:,None]**2.+self.base.r_arrs[2][None,None,:]**2.)
             self.radial_bins_RIC = radial_bins_RIC
+            # modr_grid computed on demand in apply_pointing
             
         # Define spherical harmonics [for computing power spectrum multipoles]
         # Uses lazy evaluation: Ylm components are computed on the fly instead of stored,

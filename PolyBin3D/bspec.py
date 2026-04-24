@@ -94,9 +94,9 @@ class BSpec():
         else:
             if type(mask)!=np.ndarray:
                 mask = np.array(mask)
-            self.mask = mask.astype(np.float64)
+            self.mask = np.asarray(mask, dtype=np.float64)
             if type(mask_IC)!=type(None):
-                self.mask_IC = mask_IC.astype(np.float64)
+                self.mask_IC = np.asarray(mask_IC, dtype=np.float64)
             # Check if window is uniform
             if np.std(self.mask)<1e-12:
                 self.const_mask = True
@@ -112,7 +112,7 @@ class BSpec():
         
         # Read-in shot-noise mask
         if type(mask_shot)!=type(None):
-            self.mask_shot = mask_shot.astype(np.float64)
+            self.mask_shot = np.asarray(mask_shot, dtype=np.float64)
         
         # Check S^-1 functions
         if self.applySinv is None:
@@ -460,7 +460,7 @@ class BSpec():
             print("## Caution: assuming the same shot-noise mask for the power spectrum and bispectrum!")
             self.mask_shot_2pt = self.mask_shot
         else:
-            self.mask_shot_2pt = mask_shot_2pt.astype(np.float64)
+            self.mask_shot_2pt = np.asarray(mask_shot_2pt, dtype=np.float64)
             
         assert len(Pk_cov)!=0, "Must provide fiducial power spectrum if computing covariance!"
         assert len(np.asarray(Pk_cov).shape)==2, "Pk should contain k and P_0 (and optionally P_2, P_4) columns"
