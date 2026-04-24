@@ -213,6 +213,8 @@ class PSpec():
         if mask_IC is None:
             mask_IC = self.mask_IC
         if self.add_RIC:
+            if not hasattr(self.base, 'modr_grid'):
+                self.base.modr_grid = np.sqrt(self.base.r_arrs[0][:,None,None]**2.+self.base.r_arrs[1][None,:,None]**2.+self.base.r_arrs[2][None,None,:]**2.)
             if transpose:
                 return self.base.utils.pointing_RIC_transpose(map_real, mask, mask_IC, self.radial_bins_RIC, self.base.modr_grid, self.base.nthreads)
             else:
