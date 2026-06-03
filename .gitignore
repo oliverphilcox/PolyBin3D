@@ -2,6 +2,8 @@ testing/*
 testing
 scripts
 scripts/*
+sherlock_scripts
+sherlock_scripts/*
 *.pyc
 
 # Byte-compiled / optimized / DLL files
