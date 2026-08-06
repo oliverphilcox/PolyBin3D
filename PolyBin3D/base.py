@@ -164,7 +164,7 @@ class PolyBin3D():
         assert self.pixel_window in self.pixel_windows, "Unknown pixel window '%s' supplied!"%pixel_window
         print("# Pixel window: %s"%self.pixel_window)
         if self.pixel_window!='none':
-            windows_1d = [self._pixel_window_1d(np.pi/self.gridsize[i]*k_arrs[i]/self.kF[i]) for i in range(3)]
+            windows_1d = [self._pixel_window_1d(np.pi/self.gridsize[i]*self.k_arrs[i]/self.kF[i]) for i in range(3)]
             self.pixel_window_grid = np.asarray(np.meshgrid(*windows_1d,indexing='ij')).prod(axis=0)
         
         # Define angles polynomials [for generating grids and weighting]
